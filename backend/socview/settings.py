@@ -11,17 +11,19 @@ ROOT_DIR = BASE_DIR.parent
 
 load_dotenv(ROOT_DIR / ".env")
 
+
+def _env_list(name, default=""):
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,.localhost").split(",")
-    if host.strip()
-]
+ALLOWED_HOSTS = _env_list("ALLOWED_HOSTS", "localhost,127.0.0.1,.localhost")
 
 SHARED_APPS = (
     "django_tenants",
+    "corsheaders",
     "customers",
     "accounts",
     "core",
@@ -50,6 +52,7 @@ PUBLIC_SCHEMA_DOMAIN = os.getenv("PUBLIC_SCHEMA_DOMAIN", "localhost")
 MIDDLEWARE = [
     "django_tenants.middleware.main.TenantMainMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -124,6 +127,14 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("DRF_THROTTLE_ANON", "120/min"),
+        "auth": os.getenv("DRF_THROTTLE_AUTH", "20/min"),
+        "webhook": os.getenv("DRF_THROTTLE_WEBHOOK", "120/min"),
+    },
 }
 
 ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "30"))
@@ -166,6 +177,47 @@ ELASTICSEARCH_TIMEOUT_SECONDS = int(os.getenv("ELASTICSEARCH_TIMEOUT_SECONDS", "
 SEARCH_INDEX_SYNC_ENABLED = os.getenv("SEARCH_INDEX_SYNC_ENABLED", "true").lower() == "true"
 DEFAULT_SEARCH_INDEX_SYNC_ASYNC = "false" if "test" in sys.argv else "true"
 SEARCH_INDEX_SYNC_ASYNC = os.getenv("SEARCH_INDEX_SYNC_ASYNC", DEFAULT_SEARCH_INDEX_SYNC_ASYNC).lower() == "true"
+MAX_ATTACHMENT_SIZE_MB = int(os.getenv("MAX_ATTACHMENT_SIZE_MB", "25"))
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL_ORIGINS", "false").lower() == "true"
+CORS_ALLOWED_ORIGINS = _env_list(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost,http://tenant1.localhost,http://tenant2.localhost,https://localhost,https://tenant1.localhost,https://tenant2.localhost",
+)
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "false").lower() == "true"
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+CSRF_COOKIE_SECURE = os.getenv("CSRF_COOKIE_SECURE", "false").lower() == "true"
+CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS", "http://localhost,https://localhost,http://tenant1.localhost,https://tenant1.localhost,http://tenant2.localhost,https://tenant2.localhost")
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS", "false").lower() == "true"
+SECURE_HSTS_PRELOAD = os.getenv("SECURE_HSTS_PRELOAD", "false").lower() == "true"
+SECURE_REFERRER_POLICY = os.getenv("SECURE_REFERRER_POLICY", "same-origin")
+X_FRAME_OPTIONS = os.getenv("X_FRAME_OPTIONS", "DENY")
+SECURE_CONTENT_TYPE_NOSNIFF = os.getenv("SECURE_CONTENT_TYPE_NOSNIFF", "true").lower() == "true"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {
+            "()": "core.logging_utils.JsonLogFormatter",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+        }
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+}
 
 CELERY_BEAT_SCHEDULE = {
     "heartbeat-every-minute": {
@@ -175,5 +227,9 @@ CELERY_BEAT_SCHEDULE = {
     "ingestion-scheduler-every-30-seconds": {
         "task": "tenant_data.tasks.run_ingestion_scheduler",
         "schedule": 30.0,
+    },
+    "audit-retention-daily": {
+        "task": "tenant_data.tasks.cleanup_audit_logs_task",
+        "schedule": 86400.0,
     },
 }

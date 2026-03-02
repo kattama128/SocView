@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import User
+from core.throttling import WebhookRateThrottle
 from tenant_data.audit import create_audit_log
 from tenant_data.ingestion.service import run_ingestion_for_source, test_source_connection
 from tenant_data.ingestion_serializers import IngestionRunSerializer, SourceSerializer
@@ -139,6 +140,7 @@ class IngestionRunViewSet(viewsets.ReadOnlyModelViewSet):
 
 class WebhookIngestionView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [WebhookRateThrottle]
 
     def _check_rate_limit(self, source_id, config):
         limit = int(config.rate_limit_per_minute or 60)

@@ -53,6 +53,8 @@ export type Attachment = {
   file_url: string;
   content_type: string;
   size: number;
+  scan_status: "clean" | "suspicious" | "failed";
+  scan_detail: string;
   uploaded_by: number | null;
   uploaded_by_detail?: UserSummary;
   created_at: string;
@@ -150,4 +152,30 @@ export type SavedSearch = {
   visible_columns: string[];
   created_at: string;
   updated_at: string;
+};
+
+export type AlertTimelineEvent = {
+  timestamp: string;
+  type: string;
+  title: string;
+  detail?: Record<string, unknown>;
+};
+
+export type NotificationEvent = {
+  id: number;
+  alert: number;
+  alert_title: string;
+  title: string;
+  message: string;
+  severity: "low" | "medium" | "high" | "critical";
+  metadata: Record<string, unknown>;
+  is_active: boolean;
+  is_read: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NotificationListResponse = {
+  unread_count: number;
+  results: NotificationEvent[];
 };

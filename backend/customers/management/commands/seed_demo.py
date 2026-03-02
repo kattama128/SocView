@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from django_tenants.utils import get_tenant_domain_model, get_tenant_model, schema_context
 
+from accounts.models import UserDashboardPreference
 
 DEFAULT_STATES = [
     {"name": "Nuovo", "order": 0, "is_final": False, "is_enabled": True},
@@ -252,6 +253,26 @@ class Command(BaseCommand):
             seeded[payload["username"]] = user
 
         return seeded
+
+    def _upsert_dashboard_preferences(self, users_map):
+        default_layout = [
+            {"key": "alert_trend", "enabled": True, "order": 0},
+            {"key": "top_sources", "enabled": True, "order": 1},
+            {"key": "state_distribution", "enabled": True, "order": 2},
+        ]
+        default_order = ["tenant1", "tenant2"]
+
+        for username in ["admin", "manager", "analyst", "readonly"]:
+            user = users_map.get(username)
+            if not user:
+                continue
+            UserDashboardPreference.objects.update_or_create(
+                user=user,
+                defaults={
+                    "widgets_layout": default_layout,
+                    "tenant_order": default_order,
+                },
+            )
 
     def _seed_tenant_core_data(self, schema_name, users_map):
         from tenant_data.models import (
@@ -536,6 +557,8 @@ class Command(BaseCommand):
         for schema_name in ["public", "tenant1", "tenant2"]:
             with schema_context(schema_name):
                 users_map = self._upsert_users(users_payload)
+                if schema_name == "public":
+                    self._upsert_dashboard_preferences(users_map)
                 for payload in users_payload:
                     self.stdout.write(
                         self.style.SUCCESS(

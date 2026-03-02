@@ -12,6 +12,8 @@ from .models import (
     DedupPolicy,
     IngestionEventLog,
     IngestionRun,
+    NotificationEvent,
+    NotificationRead,
     ParserDefinition,
     ParserRevision,
     SavedSearch,
@@ -70,7 +72,7 @@ class CommentAdmin(admin.ModelAdmin):
 
 @admin.register(Attachment)
 class AttachmentAdmin(admin.ModelAdmin):
-    list_display = ("id", "alert", "filename", "uploaded_by", "size", "created_at")
+    list_display = ("id", "alert", "filename", "uploaded_by", "size", "scan_status", "created_at")
 
 
 @admin.register(AuditLog)
@@ -137,6 +139,19 @@ class IngestionRunAdmin(admin.ModelAdmin):
 class IngestionEventLogAdmin(admin.ModelAdmin):
     list_display = ("id", "run", "source", "action", "alert", "created_at")
     list_filter = ("action",)
+
+
+@admin.register(NotificationEvent)
+class NotificationEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "created_at", "severity", "title", "alert", "is_active")
+    list_filter = ("severity", "is_active")
+    search_fields = ("title", "message", "alert__title")
+
+
+@admin.register(NotificationRead)
+class NotificationReadAdmin(admin.ModelAdmin):
+    list_display = ("id", "notification", "user", "read_at")
+    list_filter = ("read_at",)
 
 
 @admin.register(SavedSearch)

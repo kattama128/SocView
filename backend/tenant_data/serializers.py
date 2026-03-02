@@ -10,6 +10,8 @@ from tenant_data.models import (
     Attachment,
     AuditLog,
     Comment,
+    NotificationEvent,
+    NotificationRead,
     SavedSearch,
     Tag,
 )
@@ -82,6 +84,8 @@ class AttachmentSerializer(serializers.ModelSerializer):
             "file_url",
             "content_type",
             "size",
+            "scan_status",
+            "scan_detail",
             "uploaded_by",
             "uploaded_by_detail",
             "created_at",
@@ -276,3 +280,51 @@ class SavedSearchSerializer(serializers.ModelSerializer):
         if not isinstance(value, list):
             raise serializers.ValidationError("visible_columns deve essere una lista")
         return value
+
+
+class ExportConfigurableRequestSerializer(AlertSearchRequestSerializer):
+    columns = serializers.ListField(child=serializers.CharField(max_length=255), required=False, allow_empty=False)
+    all_results = serializers.BooleanField(required=False, default=True)
+
+
+class AlertTimelineEventSerializer(serializers.Serializer):
+    timestamp = serializers.DateTimeField()
+    type = serializers.CharField()
+    title = serializers.CharField()
+    detail = serializers.JSONField(required=False)
+
+
+class NotificationEventSerializer(serializers.ModelSerializer):
+    alert_title = serializers.CharField(source="alert.title", read_only=True)
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NotificationEvent
+        fields = (
+            "id",
+            "alert",
+            "alert_title",
+            "title",
+            "message",
+            "severity",
+            "metadata",
+            "is_active",
+            "is_read",
+            "created_at",
+            "updated_at",
+        )
+
+    def get_is_read(self, obj) -> bool:
+        reads_map = self.context.get("reads_map") or {}
+        user = self.context.get("request").user if self.context.get("request") else None
+        if not user or not user.is_authenticated:
+            return False
+        return bool(reads_map.get(obj.id))
+
+
+class NotificationAckSerializer(serializers.Serializer):
+    notification_id = serializers.PrimaryKeyRelatedField(
+        queryset=NotificationEvent.objects.all(),
+        required=False,
+        allow_null=True,
+    )

@@ -3,8 +3,10 @@ import {
   Alert,
   AlertState,
   Attachment,
+  AlertTimelineEvent,
   AuditLog,
   CommentNote,
+  NotificationListResponse,
   SavedSearch,
   SearchRequest,
   SearchResponse,
@@ -118,6 +120,35 @@ export async function uploadAttachment(alertId: string, file: File): Promise<Att
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
+}
+
+export async function fetchAlertTimeline(alertId: string): Promise<AlertTimelineEvent[]> {
+  const response = await api.get<AlertTimelineEvent[]>(`/alerts/alerts/${alertId}/timeline/`);
+  return response.data;
+}
+
+export async function exportAlertsConfigurable(
+  payload: SearchRequest & { columns: string[]; all_results?: boolean },
+): Promise<Blob> {
+  const response = await api.post("/alerts/alerts/export-configurable/", payload, {
+    responseType: "blob",
+  });
+  return response.data as Blob;
+}
+
+export async function fetchNotifications(status: "all" | "unread" = "all", limit = 30): Promise<NotificationListResponse> {
+  const response = await api.get<NotificationListResponse>("/alerts/notifications/", {
+    params: { status, limit },
+  });
+  return response.data;
+}
+
+export async function ackNotification(notificationId: number): Promise<void> {
+  await api.post(`/alerts/notifications/${notificationId}/ack/`, {});
+}
+
+export async function ackAllNotifications(): Promise<void> {
+  await api.post("/alerts/notifications/ack-all/", {});
 }
 
 export async function createState(payload: Partial<AlertState>): Promise<AlertState> {

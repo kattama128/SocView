@@ -614,3 +614,96 @@ class SearchApiTests(BaseTenantTestCase):
         self.assertEqual(delete_response.status_code, 204)
         final_list = self.client.get("/api/alerts/saved-searches/", HTTP_HOST="test.localhost")
         self.assertEqual(len(final_list.data), 0)
+
+
+class SmokeApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="smoke-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+        self.state = AlertState.objects.create(name="Nuovo", order=0, is_final=False, is_enabled=True)
+        self.alert = Alert.objects.create(
+            title="Alert smoke critico",
+            severity="critical",
+            event_timestamp=timezone.now(),
+            source_name="smoke-source",
+            source_id="smoke-1",
+            raw_payload={"message": "smoke raw"},
+            parsed_payload={"event": {"id": "smoke-1"}},
+            parsed_field_schema=[{"field": "event.id", "type": "keyword"}],
+            current_state=self.state,
+            dedup_fingerprint="smoke-fingerprint-1",
+        )
+
+    def test_system_health_ready_and_docs(self):
+        health = self.client.get("/healthz", HTTP_HOST="test.localhost")
+        ready = self.client.get("/readyz", HTTP_HOST="test.localhost")
+        docs = self.client.get("/api/docs/", HTTP_HOST="test.localhost")
+
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(ready.status_code, 200)
+        self.assertEqual(docs.status_code, 200)
+
+    def test_dashboard_notifications_and_export_endpoints(self):
+        widgets = self.client.get("/api/core/dashboard/widgets/", HTTP_HOST="test.localhost")
+        self.assertEqual(widgets.status_code, 200)
+        self.assertIn("widgets_layout", widgets.data)
+        self.assertIn("widgets", widgets.data)
+
+        updated_layout = self.client.put(
+            "/api/core/dashboard/widgets/",
+            data={
+                "widgets_layout": [
+                    {"key": "top_sources", "enabled": True, "order": 0},
+                    {"key": "alert_trend", "enabled": True, "order": 1},
+                    {"key": "state_distribution", "enabled": False, "order": 2},
+                ]
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(updated_layout.status_code, 200)
+
+        tenants = self.client.get("/api/core/dashboard/tenants/", HTTP_HOST="test.localhost")
+        self.assertEqual(tenants.status_code, 200)
+        self.assertGreaterEqual(len(tenants.data), 1)
+        self.assertEqual(tenants.data[0]["schema_name"], self.tenant.schema_name)
+
+        reorder = self.client.post(
+            "/api/core/dashboard/tenants/reorder/",
+            data={"schema_order": [self.tenant.schema_name]},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(reorder.status_code, 200)
+        self.assertEqual(reorder.data["schema_order"], [self.tenant.schema_name])
+
+        notifications = self.client.get("/api/alerts/notifications/", HTTP_HOST="test.localhost")
+        self.assertEqual(notifications.status_code, 200)
+        self.assertGreaterEqual(notifications.data["unread_count"], 1)
+        self.assertGreaterEqual(len(notifications.data["results"]), 1)
+
+        ack_all = self.client.post("/api/alerts/notifications/ack-all/", data={}, format="json", HTTP_HOST="test.localhost")
+        self.assertEqual(ack_all.status_code, 200)
+
+        export = self.client.post(
+            "/api/alerts/alerts/export-configurable/",
+            data={
+                "text": "smoke",
+                "columns": ["id", "title", "severity", "dyn:event.id"],
+                "all_results": True,
+                "page": 1,
+                "page_size": 25,
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(export.status_code, 200)
+        self.assertIn("text/csv", export["Content-Type"])
+        body = export.content.decode("utf-8")
+        self.assertIn("id,title,severity,dyn:event.id", body)
+        self.assertIn("Alert smoke critico", body)

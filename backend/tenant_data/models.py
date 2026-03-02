@@ -144,11 +144,18 @@ class Comment(TimeStampedModel):
 
 
 class Attachment(TimeStampedModel):
+    class ScanStatus(models.TextChoices):
+        CLEAN = "clean", "Clean"
+        SUSPICIOUS = "suspicious", "Suspicious"
+        FAILED = "failed", "Failed"
+
     alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name="attachments")
     filename = models.CharField(max_length=255)
     file = models.FileField(upload_to=alert_attachment_upload_path)
     content_type = models.CharField(max_length=120, blank=True)
     size = models.PositiveBigIntegerField(default=0)
+    scan_status = models.CharField(max_length=20, choices=ScanStatus.choices, default=ScanStatus.CLEAN)
+    scan_detail = models.TextField(blank=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -369,6 +376,40 @@ class SavedSearch(TimeStampedModel):
 
     def __str__(self):
         return f"{self.user_id}:{self.name}"
+
+
+class NotificationEvent(TimeStampedModel):
+    class Severity(models.TextChoices):
+        LOW = "low", "Low"
+        MEDIUM = "medium", "Medium"
+        HIGH = "high", "High"
+        CRITICAL = "critical", "Critical"
+
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name="notifications")
+    title = models.CharField(max_length=255)
+    message = models.TextField(blank=True)
+    severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.MEDIUM)
+    metadata = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+
+    def __str__(self):
+        return f"{self.severity}:{self.title}"
+
+
+class NotificationRead(models.Model):
+    notification = models.ForeignKey(NotificationEvent, on_delete=models.CASCADE, related_name="reads")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notification_reads")
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = (("notification", "user"),)
+        ordering = ("-read_at",)
+
+    def __str__(self):
+        return f"{self.user_id}->{self.notification_id}"
 
 
 class TenantPlaceholder(models.Model):

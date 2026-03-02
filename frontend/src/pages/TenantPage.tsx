@@ -29,6 +29,7 @@ import { useNavigate } from "react-router-dom";
 import {
   createSavedSearch,
   deleteSavedSearch,
+  exportAlertsConfigurable,
   fetchAlertStates,
   fetchSavedSearches,
   fetchSourceFieldSchemas,
@@ -65,6 +66,24 @@ const columnOptions = [
 ];
 
 const defaultColumns = ["title", "severity", "state", "is_active", "assignment", "tags", "event_timestamp"];
+const defaultExportColumns = ["id", "title", "severity", "state", "source_name", "event_timestamp"];
+const exportStandardColumnOptions = [
+  { value: "id", label: "ID" },
+  { value: "title", label: "Titolo" },
+  { value: "severity", label: "Severita" },
+  { value: "state", label: "Stato" },
+  { value: "is_active", label: "Attivo" },
+  { value: "source_name", label: "Fonte" },
+  { value: "source_id", label: "Source ID" },
+  { value: "event_timestamp", label: "Timestamp evento" },
+  { value: "created_at", label: "Creato il" },
+  { value: "updated_at", label: "Aggiornato il" },
+  { value: "assignment", label: "Assegnato a" },
+  { value: "tags", label: "Tag" },
+  { value: "occurrence_count", label: "Occorrenze" },
+  { value: "dedup_fingerprint", label: "Dedup fingerprint" },
+  { value: "parse_error_detail", label: "Errore parsing" },
+];
 
 function isEmptyFilterValue(value: string) {
   return value.trim() === "";
@@ -89,7 +108,9 @@ export default function TenantPage() {
   const [isActiveFilter, setIsActiveFilter] = useState<"all" | "true" | "false">("all");
   const [ordering, setOrdering] = useState("-event_timestamp");
   const [visibleColumns, setVisibleColumns] = useState<string[]>(defaultColumns);
+  const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
   const [backendLabel, setBackendLabel] = useState("-");
+  const [exporting, setExporting] = useState(false);
 
   const [dynamicValues, setDynamicValues] = useState<Record<string, string>>({});
 
@@ -98,6 +119,13 @@ export default function TenantPage() {
 
   const sourceOptions = useMemo(() => Object.keys(schemaMap).sort((a, b) => a.localeCompare(b)), [schemaMap]);
   const selectedSourceFields = useMemo(() => schemaMap[sourceFilter] ?? [], [schemaMap, sourceFilter]);
+  const exportColumnOptions = useMemo(() => {
+    const dynamicOptions = selectedSourceFields.map((item) => ({
+      value: `dyn:${item.field}`,
+      label: `Dinamico: ${item.field} (${item.type})`,
+    }));
+    return [...exportStandardColumnOptions, ...dynamicOptions];
+  }, [selectedSourceFields]);
 
   const loadStaticData = async () => {
     setLoading(true);
@@ -200,6 +228,46 @@ export default function TenantPage() {
     }
   };
 
+  const handleExportCsv = async () => {
+    if (exportColumns.length === 0) {
+      setError("Seleziona almeno una colonna per l'export CSV.");
+      return;
+    }
+
+    setExporting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const payload: SearchRequest & { columns: string[]; all_results: boolean } = {
+        text: textFilter || undefined,
+        source_name: sourceFilter || undefined,
+        state_id: stateFilter ? Number(stateFilter) : undefined,
+        severity: (severityFilter || undefined) as SearchRequest["severity"],
+        is_active: isActiveFilter === "all" ? undefined : isActiveFilter === "true",
+        dynamic_filters: buildDynamicFilters(),
+        ordering,
+        page: 1,
+        page_size: 100,
+        columns: exportColumns,
+        all_results: true,
+      };
+      const blob = await exportAlertsConfigurable(payload);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `socview-alerts-${Date.now()}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+      setSuccess("Export CSV completato.");
+    } catch {
+      setError("Export CSV non riuscito.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   useEffect(() => {
     void loadStaticData();
   }, []);
@@ -255,6 +323,7 @@ export default function TenantPage() {
     setIsActiveFilter(saved.is_active === null ? "all" : saved.is_active ? "true" : "false");
     setOrdering(saved.ordering || "-event_timestamp");
     setVisibleColumns(saved.visible_columns?.length ? saved.visible_columns : defaultColumns);
+    setExportColumns(saved.visible_columns?.length ? saved.visible_columns : defaultExportColumns);
 
     const nextDynamicValues: Record<string, string> = {};
     (saved.dynamic_filters || []).forEach((item) => {
@@ -471,6 +540,38 @@ export default function TenantPage() {
                   ))}
                 </Select>
               </FormControl>
+            </Grid>
+            <Grid item xs={12} md={8}>
+              <FormControl fullWidth>
+                <InputLabel id="export-columns-label">Colonne export CSV</InputLabel>
+                <Select
+                  labelId="export-columns-label"
+                  multiple
+                  value={exportColumns}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setExportColumns(typeof value === "string" ? value.split(",") : value);
+                  }}
+                  input={<OutlinedInput label="Colonne export CSV" />}
+                  renderValue={(selected) => selected.join(", ")}
+                >
+                  {exportColumnOptions.map((column) => (
+                    <MenuItem key={column.value} value={column.value}>
+                      <ListItemText primary={column.label} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Stack spacing={1} justifyContent="center" sx={{ height: "100%" }}>
+                <Typography variant="body2" color="text.secondary">
+                  Export configurabile con colonne standard e dinamiche della fonte selezionata.
+                </Typography>
+                <Button variant="contained" onClick={handleExportCsv} disabled={exporting}>
+                  {exporting ? "Export in corso..." : "Esporta CSV"}
+                </Button>
+              </Stack>
             </Grid>
           </Grid>
 

@@ -13,3 +13,17 @@ class User(AbstractUser):
 
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+
+class UserDashboardPreference(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="dashboard_preference")
+    widgets_layout = models.JSONField(default=list, blank=True)
+    tenant_order = models.JSONField(default=list, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Dashboard Preference"
+        verbose_name_plural = "Dashboard Preferences"
+
+    def __str__(self):
+        return f"DashboardPreference({self.user.username})"

@@ -1,9 +1,12 @@
 import csv
+from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.dateparse import parse_datetime
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework.exceptions import ValidationError
 from rest_framework import permissions, serializers, status, viewsets
@@ -22,15 +25,20 @@ from tenant_data.models import (
     Attachment,
     AuditLog,
     Comment,
+    NotificationEvent,
+    NotificationRead,
     SavedSearch,
     Tag,
 )
 from tenant_data.permissions import RoleBasedWritePermission
 from tenant_data.search import SearchRequest, build_all_source_field_schemas, build_source_field_schema, search_alerts
+from tenant_data.search.backends import extract_path
+from tenant_data.security import scan_attachment_placeholder
 from tenant_data.serializers import (
     AlertSearchRequestSerializer,
     AlertDetailSerializer,
     AlertListSerializer,
+    AlertTimelineEventSerializer,
     AlertStateSerializer,
     AssignSerializer,
     AttachmentSerializer,
@@ -38,6 +46,9 @@ from tenant_data.serializers import (
     AuditLogSerializer,
     CommentCreateSerializer,
     CommentSerializer,
+    ExportConfigurableRequestSerializer,
+    NotificationAckSerializer,
+    NotificationEventSerializer,
     SavedSearchSerializer,
     StateChangeSerializer,
     TagMutationSerializer,
@@ -211,6 +222,40 @@ class AlertViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(current_state__is_final=(is_active == "false"))
 
         return queryset
+
+    def _parse_search_payload_for_export(self, payload):
+        serializer = AlertSearchRequestSerializer(data=payload or {})
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+        return SearchRequest(
+            text=validated.get("text", ""),
+            source_name=validated.get("source_name", ""),
+            state_id=validated.get("state_id"),
+            severity=validated.get("severity", ""),
+            is_active=validated.get("is_active"),
+            dynamic_filters=validated.get("dynamic_filters", []),
+            ordering=validated.get("ordering", "-event_timestamp"),
+            page=validated.get("page", 1),
+            page_size=validated.get("page_size", 100),
+        )
+
+    def _collect_alert_ids_for_export(self, search_request, all_results=True):
+        if not all_results:
+            return search_alerts(search_request).alert_ids
+
+        collected = []
+        page = 1
+        max_pages = 50
+        while page <= max_pages:
+            search_request.page = page
+            result = search_alerts(search_request)
+            if not result.alert_ids:
+                break
+            collected.extend(result.alert_ids)
+            if len(collected) >= result.total:
+                break
+            page += 1
+        return collected
 
     def perform_create(self, serializer):
         current_state = serializer.validated_data.get("current_state")
@@ -408,13 +453,22 @@ class AlertViewSet(viewsets.ModelViewSet):
         serializer = AttachmentUploadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         uploaded_file = serializer.validated_data["file"]
+        max_mb = int(getattr(settings, "MAX_ATTACHMENT_SIZE_MB", 25) or 25)
+        max_bytes = max_mb * 1024 * 1024
+        upload_size = getattr(uploaded_file, "size", 0) or 0
+        if upload_size > max_bytes:
+            raise ValidationError({"file": f"File troppo grande: massimo {max_mb}MB"})
+
+        scan_status, scan_detail = scan_attachment_placeholder(uploaded_file)
 
         attachment = Attachment.objects.create(
             alert=alert,
             filename=uploaded_file.name,
             file=uploaded_file,
             content_type=getattr(uploaded_file, "content_type", "") or "application/octet-stream",
-            size=getattr(uploaded_file, "size", 0) or 0,
+            size=upload_size,
+            scan_status=scan_status,
+            scan_detail=scan_detail,
             uploaded_by=request.user,
         )
 
@@ -427,6 +481,8 @@ class AlertViewSet(viewsets.ModelViewSet):
                 "filename": attachment.filename,
                 "content_type": attachment.content_type,
                 "size": attachment.size,
+                "scan_status": attachment.scan_status,
+                "scan_detail": attachment.scan_detail,
             },
         )
 
@@ -462,6 +518,136 @@ class AlertViewSet(viewsets.ModelViewSet):
                     alert.event_timestamp.isoformat(),
                 ]
             )
+
+        return response
+
+    @extend_schema(request=None, responses=AlertTimelineEventSerializer(many=True), tags=["Alerts"])
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        alert = self.get_object()
+        events = []
+
+        occurrence = getattr(alert, "occurrence", None)
+        if occurrence:
+            events.append(
+                {
+                    "timestamp": occurrence.last_seen,
+                    "type": "occurrence",
+                    "title": "Occorrenze aggiornate",
+                    "detail": {
+                        "count": occurrence.count,
+                        "first_seen": occurrence.first_seen,
+                        "last_seen": occurrence.last_seen,
+                    },
+                }
+            )
+
+        for comment in alert.comments.select_related("author").all():
+            events.append(
+                {
+                    "timestamp": comment.created_at,
+                    "type": "comment",
+                    "title": f"Nota di {comment.author.username if comment.author else 'utente'}",
+                    "detail": {"body": comment.body},
+                }
+            )
+
+        for audit_entry in alert.audit_logs.select_related("actor").all():
+            if audit_entry.action == "alert.state_changed":
+                detail = audit_entry.diff or {}
+                title = "Cambio stato"
+            elif audit_entry.action == "alert.updated":
+                detail = audit_entry.diff or {}
+                title = "Alert modificato"
+            elif audit_entry.action == "alert.assigned":
+                detail = audit_entry.diff or {}
+                title = "Assegnazione aggiornata"
+            else:
+                continue
+
+            events.append(
+                {
+                    "timestamp": audit_entry.timestamp,
+                    "type": audit_entry.action,
+                    "title": title,
+                    "detail": detail,
+                }
+            )
+
+        events = sorted(events, key=lambda item: item["timestamp"], reverse=True)
+        serializer = AlertTimelineEventSerializer(events, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(request=ExportConfigurableRequestSerializer, responses={200: "text/csv"}, tags=["Alerts"])
+    @action(detail=False, methods=["post"], url_path="export-configurable")
+    def export_configurable(self, request):
+        serializer = ExportConfigurableRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        columns = payload.get("columns") or [
+            "id",
+            "title",
+            "severity",
+            "state",
+            "is_active",
+            "source_name",
+            "event_timestamp",
+        ]
+        all_results = payload.get("all_results", True)
+        search_request = self._parse_search_payload_for_export(payload)
+        alert_ids = self._collect_alert_ids_for_export(search_request, all_results=all_results)
+
+        alerts_map = {
+            item.id: item
+            for item in Alert.objects.select_related("current_state")
+            .prefetch_related("alert_tags__tag", "assignment", "occurrence")
+            .filter(id__in=alert_ids)
+        }
+        ordered_alerts = [alerts_map[item_id] for item_id in alert_ids if item_id in alerts_map]
+
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="alerts-configurable.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(columns)
+
+        for alert in ordered_alerts:
+            tags_value = ",".join([tag.name for tag in [item.tag for item in alert.alert_tags.select_related("tag")]])
+            occurrence = getattr(alert, "occurrence", None)
+            row = []
+            for column in columns:
+                if column.startswith("dyn:"):
+                    dynamic_path = column[4:]
+                    dynamic_value = extract_path(alert.parsed_payload, dynamic_path)
+                    if dynamic_value is None:
+                        dynamic_value = extract_path(alert.raw_payload, dynamic_path)
+                    row.append(dynamic_value)
+                    continue
+
+                value_map = {
+                    "id": alert.id,
+                    "title": alert.title,
+                    "severity": alert.severity,
+                    "state": alert.current_state.name,
+                    "is_active": alert.is_active,
+                    "source_name": alert.source_name,
+                    "source_id": alert.source_id,
+                    "event_timestamp": alert.event_timestamp.isoformat(),
+                    "created_at": alert.created_at.isoformat(),
+                    "updated_at": alert.updated_at.isoformat(),
+                    "dedup_fingerprint": alert.dedup_fingerprint,
+                    "assignment": (
+                        alert.assignment.assigned_to.username
+                        if getattr(alert, "assignment", None) and alert.assignment.assigned_to
+                        else ""
+                    ),
+                    "tags": tags_value,
+                    "occurrence_count": occurrence.count if occurrence else 1,
+                    "parse_error_detail": alert.parse_error_detail,
+                }
+                row.append(value_map.get(column, ""))
+            writer.writerow(row)
 
         return response
 
@@ -545,6 +731,61 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
             obj=instance,
             diff=payload,
         )
+
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = NotificationEventSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = NotificationEvent.objects.select_related("alert").filter(is_active=True)
+        status_filter = (self.request.query_params.get("status") or "all").strip().lower()
+        if status_filter == "unread":
+            read_ids = NotificationRead.objects.filter(user=self.request.user).values_list("notification_id", flat=True)
+            queryset = queryset.exclude(id__in=read_ids)
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        limit = min(max(int(request.query_params.get("limit", 30)), 1), 100)
+        notifications = list(queryset[:limit])
+        user_read_ids = set(
+            NotificationRead.objects.filter(user=request.user).values_list("notification_id", flat=True)
+        )
+        reads_map = {
+            item.notification_id: item.read_at
+            for item in NotificationRead.objects.filter(
+                user=request.user,
+                notification_id__in=[item.id for item in notifications],
+            )
+        }
+        serializer = self.get_serializer(
+            notifications,
+            many=True,
+            context={"request": request, "reads_map": reads_map},
+        )
+        unread_count = NotificationEvent.objects.filter(is_active=True).exclude(id__in=user_read_ids).count()
+        return Response({"unread_count": unread_count, "results": serializer.data}, status=status.HTTP_200_OK)
+
+    @extend_schema(request=NotificationAckSerializer, responses=inline_serializer(name="NotificationAckResponse", fields={"acknowledged": serializers.IntegerField()}), tags=["Notifications"])
+    @action(detail=False, methods=["post"], url_path="ack-all")
+    def ack_all(self, request):
+        unread = NotificationEvent.objects.filter(is_active=True).exclude(
+            id__in=NotificationRead.objects.filter(user=request.user).values_list("notification_id", flat=True)
+        )
+        created = 0
+        for notification in unread:
+            _, was_created = NotificationRead.objects.get_or_create(notification=notification, user=request.user)
+            if was_created:
+                created += 1
+        return Response({"acknowledged": created}, status=status.HTTP_200_OK)
+
+    @extend_schema(request=NotificationAckSerializer, responses=inline_serializer(name="NotificationAckSingleResponse", fields={"acknowledged": serializers.BooleanField()}), tags=["Notifications"])
+    @action(detail=True, methods=["post"], url_path="ack")
+    def ack(self, request, pk=None):
+        notification = self.get_object()
+        NotificationRead.objects.get_or_create(notification=notification, user=request.user)
+        return Response({"acknowledged": True}, status=status.HTTP_200_OK)
 
 
 class AlertSearchView(APIView):

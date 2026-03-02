@@ -7,6 +7,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, inline_serializer
 
+from core.dashboard import (
+    build_dashboard_payload,
+    get_tenant_summaries_for_user,
+    update_tenant_order_for_user,
+    update_widget_layout,
+)
+
 RootResponseSerializer = inline_serializer(
     name="RootResponseSerializer",
     fields={
@@ -35,6 +42,25 @@ CurrentContextSerializer = inline_serializer(
         "user": serializers.CharField(),
         "role": serializers.CharField(),
         "tenant": serializers.CharField(),
+    },
+)
+
+DashboardPayloadSerializer = inline_serializer(
+    name="DashboardPayloadSerializer",
+    fields={
+        "available_widgets": serializers.ListField(child=serializers.JSONField()),
+        "widgets_layout": serializers.ListField(child=serializers.JSONField()),
+        "widgets": serializers.ListField(child=serializers.JSONField()),
+    },
+)
+
+DashboardTenantSerializer = inline_serializer(
+    name="DashboardTenantSerializer",
+    fields={
+        "schema_name": serializers.CharField(),
+        "name": serializers.CharField(),
+        "on_trial": serializers.BooleanField(),
+        "active_alerts": serializers.IntegerField(),
     },
 )
 
@@ -100,3 +126,63 @@ class CurrentContextView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class DashboardWidgetsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(responses=DashboardPayloadSerializer, tags=["Dashboard"])
+    def get(self, request):
+        payload = build_dashboard_payload(request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=inline_serializer(
+            name="DashboardWidgetsUpdateRequest",
+            fields={"widgets_layout": serializers.ListField(child=serializers.JSONField())},
+        ),
+        responses=DashboardPayloadSerializer,
+        tags=["Dashboard"],
+    )
+    def put(self, request):
+        widgets_layout = request.data.get("widgets_layout", [])
+        if not isinstance(widgets_layout, list):
+            return Response({"detail": "widgets_layout deve essere una lista"}, status=status.HTTP_400_BAD_REQUEST)
+        update_widget_layout(request.user, widgets_layout)
+        payload = build_dashboard_payload(request.user)
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class DashboardTenantsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(responses=DashboardTenantSerializer, tags=["Dashboard"])
+    def get(self, request):
+        payload = get_tenant_summaries_for_user(request.user, request_tenant=getattr(request, "tenant", None))
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class DashboardTenantsReorderView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        request=inline_serializer(
+            name="DashboardTenantOrderRequest",
+            fields={"schema_order": serializers.ListField(child=serializers.CharField())},
+        ),
+        responses=inline_serializer(
+            name="DashboardTenantOrderResponse",
+            fields={"schema_order": serializers.ListField(child=serializers.CharField())},
+        ),
+        tags=["Dashboard"],
+    )
+    def post(self, request):
+        schema_order = request.data.get("schema_order", [])
+        if not isinstance(schema_order, list):
+            return Response({"detail": "schema_order deve essere una lista"}, status=status.HTTP_400_BAD_REQUEST)
+        updated = update_tenant_order_for_user(
+            request.user,
+            schema_order,
+            request_tenant=getattr(request, "tenant", None),
+        )
+        return Response({"schema_order": updated}, status=status.HTTP_200_OK)

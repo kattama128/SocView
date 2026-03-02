@@ -28,6 +28,7 @@ import {
   fetchAlert,
   fetchAlertStates,
   fetchAuditLogs,
+  fetchAlertTimeline,
   fetchTags,
   fetchUsers,
   removeAlertTag,
@@ -35,7 +36,7 @@ import {
 } from "../services/alertsApi";
 import { canWriteAlerts } from "../services/roleUtils";
 import { useAuth } from "../context/AuthContext";
-import { Alert as AlertModel, AlertState, AuditLog, Tag, UserSummary } from "../types/alerts";
+import { Alert as AlertModel, AlertState, AlertTimelineEvent, AuditLog, Tag, UserSummary } from "../types/alerts";
 
 export default function AlertDetailPage() {
   const { alertId } = useParams();
@@ -47,6 +48,7 @@ export default function AlertDetailPage() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [timelineEvents, setTimelineEvents] = useState<AlertTimelineEvent[]>([]);
 
   const [selectedState, setSelectedState] = useState<number | "">("");
   const [selectedTag, setSelectedTag] = useState<number | "">("");
@@ -70,18 +72,20 @@ export default function AlertDetailPage() {
     setLoading(true);
     setError(null);
     try {
-      const [alertResp, stateResp, tagResp, userResp, auditResp] = await Promise.all([
+      const [alertResp, stateResp, tagResp, userResp, auditResp, timelineResp] = await Promise.all([
         fetchAlert(alertId),
         fetchAlertStates(),
         fetchTags(),
         fetchUsers(),
         fetchAuditLogs(alertId),
+        fetchAlertTimeline(alertId),
       ]);
       setAlertData(alertResp);
       setStates(stateResp.filter((state) => state.is_enabled));
       setTags(tagResp);
       setUsers(userResp);
       setAuditLogs(auditResp);
+      setTimelineEvents(timelineResp);
 
       setSelectedState(alertResp.current_state);
       setSelectedAssignee(alertResp.assignment?.assigned_to ?? "");
@@ -206,7 +210,7 @@ export default function AlertDetailPage() {
       <Card>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Azioni
+            Quick Actions
           </Typography>
           <Grid container spacing={2}>
             <Grid item xs={12} md={4}>
@@ -401,6 +405,9 @@ export default function AlertDetailPage() {
                 <Typography variant="caption" color="text.secondary">
                   {(attachment.size / 1024).toFixed(1)} KB - {attachment.uploaded_by_detail?.username ?? "sconosciuto"}
                 </Typography>
+                <Typography variant="caption" display="block" color="text.secondary">
+                  Scan: {attachment.scan_status} - {attachment.scan_detail}
+                </Typography>
               </Box>
             ))}
 
@@ -435,6 +442,32 @@ export default function AlertDetailPage() {
                 Upload
               </Button>
             </Stack>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Typography variant="h6">Timeline eventi</Typography>
+          <Stack spacing={1} sx={{ mt: 1 }}>
+            {timelineEvents.map((event, index) => (
+              <Box key={`${event.type}-${event.timestamp}-${index}`} sx={{ p: 1.2, bgcolor: "#f8f9fa", borderRadius: 1 }}>
+                <Typography variant="body2">
+                  <strong>{event.title}</strong>
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {new Date(event.timestamp).toLocaleString("it-IT")} - {event.type}
+                </Typography>
+                {event.detail ? (
+                  <Box component="pre" sx={{ overflowX: "auto", bgcolor: "#fff", p: 1, mt: 0.7 }}>
+                    {JSON.stringify(event.detail, null, 2)}
+                  </Box>
+                ) : null}
+              </Box>
+            ))}
+            {timelineEvents.length === 0 ? (
+              <Typography color="text.secondary">Nessun evento timeline disponibile.</Typography>
+            ) : null}
           </Stack>
         </CardContent>
       </Card>

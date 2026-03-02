@@ -2,8 +2,9 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from core.throttling import AuthRateThrottle
 from .serializers import CustomTokenObtainPairSerializer, UserSerializer
 from .models import User
 
@@ -11,6 +12,12 @@ from .models import User
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
 
 class CurrentUserView(APIView):

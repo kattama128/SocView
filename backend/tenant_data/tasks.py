@@ -1,10 +1,13 @@
+from datetime import timedelta
+
+from django.conf import settings
 from celery import shared_task
 from django.utils import timezone
 from django_tenants.utils import schema_context
 
 from customers.models import Client
 from tenant_data.ingestion.service import run_ingestion_for_source
-from tenant_data.models import IngestionRun, Source, SourceConfig
+from tenant_data.models import AuditLog, IngestionRun, Source, SourceConfig
 from tenant_data.search import delete_alert_index, rebuild_alert_index, sync_alert_index
 
 
@@ -85,3 +88,18 @@ def delete_alert_index_task(schema_name, alert_id):
 def rebuild_alert_index_task(schema_name):
     with schema_context(schema_name):
         return rebuild_alert_index()
+
+
+@shared_task
+def cleanup_audit_logs_task():
+    retention_days = max(int(getattr(settings, "AUDIT_RETENTION_DAYS", 90) or 90), 1)
+    cutoff = timezone.now() - timedelta(days=retention_days)
+
+    deleted_total = 0
+    tenants = Client.objects.exclude(schema_name="public")
+    for tenant in tenants:
+        with schema_context(tenant.schema_name):
+            deleted, _ = AuditLog.objects.filter(timestamp__lt=cutoff).delete()
+            deleted_total += deleted
+
+    return {"retention_days": retention_days, "deleted": deleted_total}

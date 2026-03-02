@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from .models import User
+from .models import User, UserDashboardPreference
 
 
 @admin.register(User)
@@ -9,3 +9,8 @@ class UserAdmin(DjangoUserAdmin):
     fieldsets = DjangoUserAdmin.fieldsets + (("Ruolo", {"fields": ("role",)}),)
     list_display = ("username", "email", "role", "is_staff", "is_superuser", "is_active")
     list_filter = ("role", "is_staff", "is_superuser", "is_active")
+
+
+@admin.register(UserDashboardPreference)
+class UserDashboardPreferenceAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "updated_at")
