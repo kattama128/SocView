@@ -73,7 +73,9 @@ export type Alert = {
   source_name: string;
   source_id: string;
   raw_payload: Record<string, unknown>;
-  parsed_payload: Record<string, unknown>;
+  parsed_payload: Record<string, unknown> | null;
+  parsed_field_schema: Array<{ field: string; type: string }>;
+  parse_error_detail: string;
   current_state: number;
   current_state_detail: AlertState;
   is_active: boolean;

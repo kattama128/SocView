@@ -1,4 +1,5 @@
 from datetime import timedelta
+import json
 
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory
@@ -7,6 +8,7 @@ from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIClient
 
 from tenant_data.audit import create_audit_log
+from tenant_data.ingestion.parser import ParserValidationError, parse_event, parse_parser_config_text
 from tenant_data.ingestion.service import run_ingestion_for_source
 from tenant_data.models import (
     Alert,
@@ -16,6 +18,8 @@ from tenant_data.models import (
     DedupPolicy,
     IngestionEventLog,
     IngestionRun,
+    ParserDefinition,
+    ParserRevision,
     Source,
     SourceConfig,
     Tag,
@@ -107,6 +111,11 @@ class AuditLogTests(BaseTenantTestCase):
 class IngestionServiceTests(BaseTenantTestCase):
     def setUp(self):
         self.state = AlertState.objects.create(name="Nuovo", order=0, is_final=False, is_enabled=True)
+        self.manager = get_user_model().objects.create_user(
+            username="manager-test",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
         self.rest_source = Source.objects.create(
             name="REST Test Source",
             type=Source.Type.REST,
@@ -178,7 +187,8 @@ class IngestionServiceTests(BaseTenantTestCase):
         self.assertEqual(run.created_count, 1)
 
         alert = Alert.objects.get(source_name=self.rest_source.name, source_id="parse-1")
-        self.assertEqual(alert.parsed_payload.get("_parse_error"), "errore parser test")
+        self.assertIsNone(alert.parsed_payload)
+        self.assertIn("errore parser test", alert.parse_error_detail)
 
         tag = Tag.objects.get(name="#unparsed", scope=Tag.Scope.ALERT)
         self.assertTrue(AlertTag.objects.filter(alert=alert, tag=tag).exists())
@@ -189,6 +199,96 @@ class IngestionServiceTests(BaseTenantTestCase):
                 parse_error__icontains="errore parser test",
             ).exists()
         )
+
+    def test_configured_parser_populates_parsed_payload_and_field_schema(self):
+        parser_definition = ParserDefinition.objects.create(
+            source=self.rest_source,
+            name="REST Parser",
+            description="Parser test",
+            is_enabled=True,
+        )
+        parser_config = {
+            "extract": [
+                {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+                {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+                {"type": "jsonpath", "name": "title", "path": "$.title"},
+            ],
+            "transform": [{"type": "concat", "target": "summary", "fields": ["title", "event_id"], "separator": " :: "}],
+            "normalize": {
+                "ecs": {
+                    "event.id": "event_id",
+                    "event.severity": "severity",
+                    "event.summary": "summary",
+                }
+            },
+            "output": {"mode": "normalized"},
+        }
+        revision = ParserRevision.objects.create(
+            parser_definition=parser_definition,
+            version=1,
+            config_text=json.dumps(parser_config),
+            config_data=parser_config,
+            created_by=self.manager,
+        )
+        parser_definition.active_revision = revision
+        parser_definition.save(update_fields=["active_revision", "updated_at"])
+
+        run = run_ingestion_for_source(self.rest_source, trigger=IngestionRun.Trigger.MANUAL)
+        self.assertEqual(run.status, IngestionRun.Status.SUCCESS)
+
+        alert = Alert.objects.get(source_name=self.rest_source.name, source_id="dup-1")
+        self.assertEqual(alert.parse_error_detail, "")
+        self.assertIsInstance(alert.parsed_payload, dict)
+        self.assertEqual(alert.parsed_payload.get("event", {}).get("id"), "dup-1")
+        self.assertTrue(any(item.get("field") == "event.id" for item in alert.parsed_field_schema))
+
+    def test_broken_parser_generates_unparsed_tag(self):
+        self.rest_source.config.config_json = {
+            "use_mock": True,
+            "mock_events": [
+                {
+                    "event_id": "broken-parser-1",
+                    "title": "not-an-int",
+                    "severity": "low",
+                    "timestamp": "2026-01-10T10:00:00Z",
+                }
+            ],
+        }
+        self.rest_source.config.save(update_fields=["config_json", "updated_at"])
+
+        parser_definition = ParserDefinition.objects.create(
+            source=self.rest_source,
+            name="Broken Parser",
+            description="Broken cast parser",
+            is_enabled=True,
+        )
+        broken_config = {
+            "extract": [
+                {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+                {"type": "jsonpath", "name": "title", "path": "$.title"},
+            ],
+            "transform": [{"type": "cast", "field": "title", "to": "int"}],
+            "normalize": {"ecs": {"event.id": "event_id", "event.code": "title"}},
+            "output": {"mode": "normalized"},
+        }
+        revision = ParserRevision.objects.create(
+            parser_definition=parser_definition,
+            version=1,
+            config_text=json.dumps(broken_config),
+            config_data=broken_config,
+            created_by=self.manager,
+        )
+        parser_definition.active_revision = revision
+        parser_definition.save(update_fields=["active_revision", "updated_at"])
+
+        run = run_ingestion_for_source(self.rest_source, trigger=IngestionRun.Trigger.MANUAL)
+        self.assertEqual(run.status, IngestionRun.Status.SUCCESS)
+        alert = Alert.objects.get(source_name=self.rest_source.name, source_id="broken-parser-1")
+        self.assertIsNone(alert.parsed_payload)
+        self.assertNotEqual(alert.parse_error_detail, "")
+        tag = Tag.objects.get(name="#unparsed", scope=Tag.Scope.ALERT)
+        self.assertTrue(AlertTag.objects.filter(alert=alert, tag=tag).exists())
+        self.assertTrue(IngestionEventLog.objects.filter(run=run, alert=alert, parse_error__gt="").exists())
 
 
 class WebhookIngestionTests(BaseTenantTestCase):
@@ -255,3 +355,112 @@ class WebhookIngestionTests(BaseTenantTestCase):
             HTTP_X_API_KEY="invalid",
         )
         self.assertEqual(response.status_code, 403)
+
+
+class ParserEngineTests(BaseTenantTestCase):
+    def test_parser_pipeline_extract_transform_normalize_output(self):
+        config = {
+            "extract": [
+                {"type": "jsonpath", "name": "event_id", "path": "$.id"},
+                {"type": "jsonpath", "name": "message", "path": "$.message"},
+                {"type": "grok", "source": "message", "pattern": "user=%{WORD:user} ip=%{IPV4:ip}"},
+            ],
+            "transform": [{"type": "concat", "target": "summary", "fields": ["user", "ip"], "separator": "@"}],
+            "normalize": {"ecs": {"event.id": "event_id", "user.name": "user", "source.ip": "ip", "event.summary": "summary"}},
+            "output": {"mode": "normalized"},
+        }
+        payload = {"id": "evt-1", "message": "user=alice ip=192.168.1.22"}
+
+        result = parse_event(payload, parser_config=config)
+        self.assertEqual(result.parsed_payload.get("event", {}).get("id"), "evt-1")
+        self.assertEqual(result.parsed_payload.get("user", {}).get("name"), "alice")
+        self.assertEqual(result.parsed_payload.get("source", {}).get("ip"), "192.168.1.22")
+        self.assertTrue(any(item.get("field") == "event.id" for item in result.field_schema))
+
+    def test_invalid_parser_config_raises_clear_error(self):
+        broken = {"extract": [{"type": "unknown"}]}
+        with self.assertRaises(ParserValidationError):
+            parse_parser_config_text(json.dumps(broken))
+
+
+class ParserApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="parser-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+        self.source = Source.objects.create(
+            name="Parser API Source",
+            type=Source.Type.REST,
+            is_enabled=True,
+            severity_map={"field": "severity", "default": "medium", "map": {}},
+        )
+        SourceConfig.objects.create(source=self.source, config_json={"use_mock": True, "mock_events": []})
+        DedupPolicy.objects.create(source=self.source, fingerprint_fields=["event_id"])
+        self.config_v1 = {
+            "extract": [
+                {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+                {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+            ],
+            "transform": [],
+            "normalize": {"ecs": {"event.id": "event_id", "event.severity": "severity"}},
+            "output": {"mode": "normalized"},
+        }
+        self.config_v2 = {
+            "extract": [
+                {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+                {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+                {"type": "jsonpath", "name": "message", "path": "$.message"},
+            ],
+            "transform": [{"type": "concat", "target": "summary", "fields": ["event_id", "message"], "separator": " -> "}],
+            "normalize": {"ecs": {"event.id": "event_id", "event.severity": "severity", "event.summary": "summary"}},
+            "output": {"mode": "normalized"},
+        }
+
+    def test_create_preview_update_and_rollback_parser(self):
+        create_response = self.client.post(
+            "/api/ingestion/parsers/",
+            data={
+                "source": self.source.id,
+                "name": "Parser API",
+                "description": "Parser test",
+                "is_enabled": True,
+                "config_text": json.dumps(self.config_v1),
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        parser_id = create_response.data["id"]
+        self.assertEqual(create_response.data["active_revision_detail"]["version"], 1)
+
+        preview_response = self.client.post(
+            f"/api/ingestion/parsers/{parser_id}/preview/",
+            data={"raw_payload": {"event_id": "evt-1", "severity": "high"}},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(preview_response.data["parsed_payload"]["event"]["id"], "evt-1")
+
+        update_response = self.client.patch(
+            f"/api/ingestion/parsers/{parser_id}/",
+            data={"config_text": json.dumps(self.config_v2)},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.data["active_revision_detail"]["version"], 2)
+
+        rollback_response = self.client.post(
+            f"/api/ingestion/parsers/{parser_id}/rollback/",
+            data={"revision_id": create_response.data["active_revision_detail"]["id"]},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(rollback_response.status_code, 200)
+        self.assertEqual(rollback_response.data["active_revision_detail"]["version"], 3)
+        self.assertEqual(rollback_response.data["active_revision_detail"]["rollback_from_version"], 1)

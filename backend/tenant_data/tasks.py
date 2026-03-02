@@ -10,7 +10,16 @@ from tenant_data.models import IngestionRun, Source, SourceConfig
 @shared_task
 def ingest_source_task(schema_name, source_id, trigger=IngestionRun.Trigger.SCHEDULED):
     with schema_context(schema_name):
-        source = Source.objects.select_related("config", "dedup_policy").filter(id=source_id, is_enabled=True).first()
+        source = (
+            Source.objects.select_related(
+                "config",
+                "dedup_policy",
+                "parser_definition",
+                "parser_definition__active_revision",
+            )
+            .filter(id=source_id, is_enabled=True)
+            .first()
+        )
         if not source:
             return {"ok": False, "detail": "Source non trovata o disabilitata"}
 
@@ -34,7 +43,11 @@ def run_ingestion_scheduler():
     tenants = Client.objects.exclude(schema_name="public")
     for tenant in tenants:
         with schema_context(tenant.schema_name):
-            sources = Source.objects.select_related("config").filter(
+            sources = Source.objects.select_related(
+                "config",
+                "parser_definition",
+                "parser_definition__active_revision",
+            ).filter(
                 is_enabled=True,
                 type__in=[Source.Type.IMAP, Source.Type.REST],
             )

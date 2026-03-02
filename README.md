@@ -1,38 +1,38 @@
-# SocView (M2)
+# SocView (M3)
 
-Monorepo SOC multi-tenant con stack:
+Monorepo SOC multi-tenant con:
 - Backend: Django + DRF + SimpleJWT
-- Multi-tenant: django-tenants (schema `public` + schema tenant)
+- Multi-tenant: django-tenants (`public` + tenant schema)
 - DB: PostgreSQL
 - Async: Celery + Redis
 - Frontend: React + TypeScript + Material UI (IT)
 - Reverse proxy: Nginx
 
-## Struttura repo
+## Struttura
 
-- `backend/` API Django, modelli tenant/public, ingestion engine
-- `frontend/` UI React TypeScript
+- `backend/` API Django + modelli tenant
+- `frontend/` UI React
 - `nginx/` reverse proxy
 - `scripts/` helper bootstrap/migrate/seed
 - `docker-compose.yml` stack locale
 
-## Avvio rapido
+## Avvio
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
 
-URL principali:
-- UI public: [http://localhost](http://localhost)
-- UI tenant demo: [http://tenant1.localhost](http://tenant1.localhost)
-- Swagger/OpenAPI: [http://localhost/api/docs/](http://localhost/api/docs/)
+URL:
+- UI: [http://localhost](http://localhost)
+- Tenant demo: [http://tenant1.localhost](http://tenant1.localhost)
+- Swagger: [http://localhost/api/docs/](http://localhost/api/docs/)
 - Health: [http://localhost/healthz](http://localhost/healthz)
 - Readiness: [http://localhost/readyz](http://localhost/readyz)
 
 ## Migrazioni
 
-Shared schema (`public`):
+Shared schema:
 
 ```bash
 docker compose exec backend python manage.py migrate_schemas --shared --noinput
@@ -44,7 +44,7 @@ Tenant schema:
 docker compose exec backend python manage.py migrate_schemas --tenant --noinput
 ```
 
-Check migrazioni pendenti:
+Check migrazioni:
 
 ```bash
 docker compose exec backend python manage.py migrate_schemas --shared --check
@@ -57,11 +57,12 @@ docker compose exec backend python manage.py migrate_schemas --tenant --check
 docker compose exec backend python manage.py seed_demo
 ```
 
-Crea/aggiorna:
+Seed crea/aggiorna:
 - tenant demo: `tenant1.localhost`, `tenant2.localhost`
-- utenti demo in `public` + tenant schema
+- utenti demo su `public` + tenant schema
 - stati/tag/alert demo
-- fonti ingestion demo: IMAP, REST pull, Webhook push
+- fonti ingestion demo (`imap`, `rest`, `webhook`)
+- parser definition + parser revision demo per fonte
 
 ## Credenziali demo
 
@@ -83,130 +84,144 @@ Frontend build:
 ```bash
 cd frontend
 npm run build
+cd ..
 ```
 
-## Ingestion engine (M2)
+## Ingestion e parsing (M2 + M3)
 
-### Tipi fonte supportati
+### Fonti ingestion
 
-- IMAP (`poll`)
-- REST API pull (`poll`)
-- Webhook (`push`)
+- `imap` (poll)
+- `rest` pull (poll)
+- `webhook` push
 
-### Modelli M2
-
-- `Source`
-- `SourceConfig`
-- `DedupPolicy`
-- `IngestionRun`
-- `IngestionEventLog`
-
-### API ingestion
-
+Endpoint principali ingestion:
 - `GET/POST /api/ingestion/sources/`
 - `GET/PATCH/DELETE /api/ingestion/sources/{id}/`
 - `POST /api/ingestion/sources/{id}/test-connection/`
 - `POST /api/ingestion/sources/{id}/run-now/`
 - `GET /api/ingestion/runs/`
 - `POST /api/ingestion/webhook/{source_id}/`
-- `GET /api/ingestion/mock/rest-events/` (mock feed locale)
+- `GET /api/ingestion/mock/rest-events/`
 
-### Comportamento pipeline
+### Parser config-driven (stile pipeline)
 
-- salva sempre `raw_payload`
-- parsing placeholder con gestione errori
-- se parsing fallisce: alert creato/aggiornato + tag automatico `#unparsed`
-- dedup per fingerprint configurabile (`DedupPolicy`)
-- strategy MVP: incremento `AlertOccurrence.count`
-- aggiorna `last_success`, `last_error`, `status`, `health_details`
+Modelli:
+- `ParserDefinition`
+- `ParserRevision`
 
-### Esempio config JSON IMAP
+Pipeline step:
+1. `extract` (jsonpath/regex/grok-like)
+2. `transform` (rename/cast/concat/map_values)
+3. `normalize` (mapping ECS-like)
+4. `output` (`parsed_payload` + `field_schema`)
+
+Versioning parser:
+- ogni modifica config crea una nuova revisione
+- rollback crea una nuova revisione derivata dalla revisione scelta
+
+In ingestion:
+- se parser configurato sulla fonte: ogni raw event passa dal parser
+- su failure parser:
+  - `parsed_payload = null`
+  - `parse_error_detail` valorizzato
+  - tag automatico `#unparsed`
+  - alert comunque creato/visibile
+
+### API parser
+
+- `GET/POST /api/ingestion/parsers/`
+- `GET/PATCH/DELETE /api/ingestion/parsers/{id}/`
+- `POST /api/ingestion/parsers/preview-config/` (preview config non salvata)
+- `POST /api/ingestion/parsers/{id}/preview/`
+- `POST /api/ingestion/parsers/{id}/rollback/`
+
+## Esempio parser config (JSON)
 
 ```json
 {
-  "use_mock": true,
-  "mock_messages": [
-    {
-      "event_id": "imap-demo-1",
-      "subject": "IMAP suspicious login",
-      "severity": "high",
-      "date": "2026-01-10T10:30:00Z",
-      "body": "Tentativo di accesso sospetto."
-    },
-    {
-      "event_id": "imap-demo-2",
-      "subject": "IMAP parser failure demo",
-      "severity": "medium",
-      "force_parse_error": true,
-      "parse_error_message": "Errore parser simulato da IMAP mock"
+  "extract": [
+    { "type": "jsonpath", "name": "event_id", "path": "$.event_id" },
+    { "type": "jsonpath", "name": "severity", "path": "$.severity" },
+    { "type": "jsonpath", "name": "message", "path": "$.message" },
+    { "type": "grok", "source": "message", "pattern": "user=%{WORD:user} ip=%{IPV4:ip}" }
+  ],
+  "transform": [
+    { "type": "concat", "target": "summary", "fields": ["event_id", "user"], "separator": " :: " }
+  ],
+  "normalize": {
+    "ecs": {
+      "event.id": "event_id",
+      "event.severity": "severity",
+      "event.original": "message",
+      "source.ip": "ip",
+      "user.name": "user",
+      "event.summary": "summary"
     }
-  ]
-}
-```
-
-### Esempio config JSON REST
-
-```json
-{
-  "url": "http://backend:8000/api/ingestion/mock/rest-events/",
-  "method": "GET",
-  "headers": {
-    "Host": "tenant1.localhost"
   },
-  "pagination": {
-    "type": "none"
-  }
+  "output": { "mode": "normalized" }
 }
 ```
 
-Nota: per i tenant demo, il seed imposta automaticamente l'header `Host` coerente con il tenant (`tenant1.localhost`, `tenant2.localhost`).
+## Come usare preview endpoint
 
-### Esempio webhook curl
+Preview config non ancora salvata:
 
 ```bash
-curl -X POST "http://tenant1.localhost/api/ingestion/webhook/<SOURCE_ID>/" \
-  -H "X-API-Key: <WEBHOOK_API_KEY>" \
+curl -X POST "http://tenant1.localhost/api/ingestion/parsers/preview-config/" \
+  -H "Authorization: Bearer <JWT_MANAGER_OR_SUPERADMIN>" \
   -H "Content-Type: application/json" \
-  -d '{"event_id":"wh-demo-1","title":"Webhook test","severity":"high","message":"Demo webhook"}'
+  -d '{
+    "config_text": "{ \"extract\": [{\"type\":\"jsonpath\",\"name\":\"event_id\",\"path\":\"$.event_id\"}], \"transform\": [], \"normalize\": {\"ecs\": {\"event.id\":\"event_id\"}}, \"output\": {\"mode\":\"normalized\"} }",
+    "raw_payload": { "event_id": "preview-1" }
+  }'
 ```
 
-## UI (M2)
+Preview parser già salvato:
 
-Su host tenant (es. `tenant1.localhost`):
-- `/tenant`: tabella alert + filtri base
-- `/alerts/:id`: dettaglio alert (stato/tag/assegnazione/note/allegati/audit)
-- `/configurazione`: gestione stati/tag
-- `/fonti`: gestione fonti ingestion + test connessione + run-now + log run + esempio webhook curl
+```bash
+curl -X POST "http://tenant1.localhost/api/ingestion/parsers/<PARSER_ID>/preview/" \
+  -H "Authorization: Bearer <JWT_MANAGER_OR_SUPERADMIN>" \
+  -H "Content-Type: application/json" \
+  -d '{ "raw_payload": { "event_id": "preview-2", "severity": "high" } }'
+```
+
+Rollback revisione parser:
+
+```bash
+curl -X POST "http://tenant1.localhost/api/ingestion/parsers/<PARSER_ID>/rollback/" \
+  -H "Authorization: Bearer <JWT_MANAGER_OR_SUPERADMIN>" \
+  -H "Content-Type: application/json" \
+  -d '{ "revision_id": <REVISION_ID> }'
+```
+
+## UI
+
+Host tenant (`tenant1.localhost`):
+- `/tenant` lista alert
+- `/alerts/:id` dettaglio alert con switch Raw/Parsed + errore parsing
+- `/fonti` gestione fonti ingestion
+- `/parser` editor parser (config textarea, preview, revisioni, rollback)
+- `/configurazione` gestione stati/tag
 
 ## RBAC
 
 - SuperAdmin: tutto
-- SOC Manager: gestione completa tenant (inclusa configurazione fonti ingestion)
-- SOC Analyst: CRUD alert e operazioni operative; non può creare/modificare fonti ingestion
+- SOC Manager: gestione tenant completa (fonti/parser inclusi)
+- SOC Analyst: operazioni alert; non può gestire parser/fonti
 - ReadOnly: sola lettura
 
-## Checklist M2 (accettazione)
+## Checklist accettazione M3
 
-- `docker compose up -d --build` avvia tutti i servizi
-  - verifica: `docker compose ps`
-- login locale JWT funzionante
-  - verifica: `POST /api/auth/token/`
-- health/readiness 200
-  - verifica: `GET /healthz`, `GET /readyz`
-- swagger accessibile
-  - verifica: `GET /api/docs/`
-- seed crea tenant/utenti/fonti demo
-  - verifica: `python manage.py seed_demo` + `GET /api/ingestion/sources/`
-- almeno una fonte per tipo genera alert reali
-  - verifica:
-    - IMAP/REST: `POST /api/ingestion/sources/{id}/run-now/`
-    - Webhook: `POST /api/ingestion/webhook/{source_id}/`
-- dedup incrementa `occurrence`
-  - verifica: dettaglio alert `GET /api/alerts/alerts/{id}/` (`occurrence.count`)
-- parsing failure crea alert visibile con tag `#unparsed`
-  - verifica: alert `rest-demo-2` / `imap-demo-2` in UI/API
-- `last_success` / `last_error` / log ingestion visibili
-  - verifica: `GET /api/ingestion/sources/` e `GET /api/ingestion/runs/`
+- Creo/modifico parser e vedo preview:
+  - API: `POST /api/ingestion/parsers/`, `PATCH /api/ingestion/parsers/{id}/`, `POST /preview/`
+  - UI: pagina `/parser`
+- Rollback parser funziona:
+  - API: `POST /api/ingestion/parsers/{id}/rollback/`
+  - verifica nuova revisione attiva con versione incrementata
+- Evento che rompe parser genera `#unparsed` e errore visibile:
+  - API: alert con `parsed_payload=null` + `parse_error_detail` valorizzato
+  - UI: `/alerts/:id` mostra errore parsing + payload parsed nullo
 
 ## Script helper
 

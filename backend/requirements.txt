@@ -8,3 +8,4 @@ celery==5.4.0
 redis==5.0.7
 django-redis==5.4.0
 python-dotenv==1.0.1
+PyYAML==6.0.2

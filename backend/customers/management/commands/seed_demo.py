@@ -1,5 +1,6 @@
 from datetime import timedelta
 from copy import deepcopy
+import json
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -141,6 +142,96 @@ DEFAULT_SOURCES = [
     },
 ]
 
+DEFAULT_PARSER_CONFIGS = {
+    "imap": {
+        "extract": [
+            {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+            {"type": "jsonpath", "name": "subject", "path": "$.subject"},
+            {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+            {"type": "jsonpath", "name": "timestamp", "path": "$.date"},
+            {"type": "jsonpath", "name": "source_email", "path": "$.from"},
+            {"type": "jsonpath", "name": "message", "path": "$.body"},
+        ],
+        "transform": [
+            {
+                "type": "concat",
+                "target": "summary",
+                "fields": ["subject", "message"],
+                "separator": " | ",
+            }
+        ],
+        "normalize": {
+            "ecs": {
+                "event.id": "event_id",
+                "event.severity": "severity",
+                "event.original": "message",
+                "source.email": "source_email",
+                "@timestamp": "timestamp",
+                "event.summary": "summary",
+            }
+        },
+        "output": {
+            "mode": "normalized",
+        },
+    },
+    "rest": {
+        "extract": [
+            {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+            {"type": "jsonpath", "name": "title", "path": "$.title"},
+            {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+            {"type": "jsonpath", "name": "timestamp", "path": "$.timestamp"},
+            {"type": "jsonpath", "name": "message", "path": "$.message"},
+        ],
+        "transform": [
+            {
+                "type": "map_values",
+                "field": "severity",
+                "map": {"warn": "medium", "crit": "critical"},
+                "default": "medium",
+            },
+            {"type": "concat", "target": "summary", "fields": ["title", "message"], "separator": " - "},
+        ],
+        "normalize": {
+            "ecs": {
+                "event.id": "event_id",
+                "event.severity": "severity",
+                "event.original": "message",
+                "@timestamp": "timestamp",
+                "event.summary": "summary",
+            }
+        },
+        "output": {"mode": "normalized"},
+    },
+    "webhook": {
+        "extract": [
+            {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+            {"type": "jsonpath", "name": "title", "path": "$.title"},
+            {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+            {"type": "jsonpath", "name": "timestamp", "path": "$.timestamp"},
+            {"type": "jsonpath", "name": "message", "path": "$.message"},
+            {
+                "type": "grok",
+                "source": "message",
+                "pattern": "user=%{WORD:user} ip=%{IPV4:ip}",
+            },
+        ],
+        "transform": [
+            {"type": "map_values", "field": "severity", "map": {"sev1": "low", "sev2": "medium", "sev3": "high"}}
+        ],
+        "normalize": {
+            "ecs": {
+                "event.id": "event_id",
+                "event.severity": "severity",
+                "event.original": "message",
+                "source.ip": "ip",
+                "user.name": "user",
+                "@timestamp": "timestamp",
+            }
+        },
+        "output": {"mode": "normalized"},
+    },
+}
+
 
 class Command(BaseCommand):
     help = "Crea tenant e utenti demo per bootstrap locale"
@@ -171,10 +262,13 @@ class Command(BaseCommand):
             Assignment,
             Comment,
             DedupPolicy,
+            ParserDefinition,
+            ParserRevision,
             Source,
             SourceConfig,
             Tag,
         )
+        from tenant_data.ingestion.parser import validate_parser_config
 
         states_by_name = {}
         for state_payload in DEFAULT_STATES:
@@ -273,6 +367,33 @@ class Command(BaseCommand):
                     "strategy": source_payload["dedup"]["strategy"],
                 },
             )
+
+            parser_config = DEFAULT_PARSER_CONFIGS.get(source.type)
+            if parser_config:
+                validated_config = validate_parser_config(parser_config)
+                config_text = json.dumps(validated_config, ensure_ascii=False, indent=2)
+                parser_definition, _ = ParserDefinition.objects.update_or_create(
+                    source=source,
+                    defaults={
+                        "name": f"{source.name} Parser",
+                        "description": f"Parser demo per fonte {source.name}",
+                        "is_enabled": True,
+                    },
+                )
+
+                active_revision = parser_definition.active_revision
+                if not active_revision or active_revision.config_text.strip() != config_text.strip():
+                    latest = parser_definition.revisions.order_by("-version").first()
+                    next_version = (latest.version if latest else 0) + 1
+                    revision = ParserRevision.objects.create(
+                        parser_definition=parser_definition,
+                        version=next_version,
+                        config_text=config_text,
+                        config_data=validated_config,
+                        created_by=users_map.get("manager"),
+                    )
+                    parser_definition.active_revision = revision
+                    parser_definition.save(update_fields=["active_revision", "updated_at"])
 
     def handle(self, *args, **options):
         User = get_user_model()

@@ -2,6 +2,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import DomainIcon from "@mui/icons-material/Domain";
 import LogoutIcon from "@mui/icons-material/Logout";
 import SettingsIcon from "@mui/icons-material/Settings";
+import SchemaIcon from "@mui/icons-material/Schema";
 import SensorsIcon from "@mui/icons-material/Sensors";
 import {
   AppBar,
@@ -36,6 +37,7 @@ export default function AppLayout() {
 
     if (canManageSources(user?.role)) {
       baseItems.push({ label: "Fonti", icon: <SensorsIcon />, to: "/fonti" });
+      baseItems.push({ label: "Parser", icon: <SchemaIcon />, to: "/parser" });
     }
 
     if (canManageStates(user?.role) || canManageTags(user?.role)) {

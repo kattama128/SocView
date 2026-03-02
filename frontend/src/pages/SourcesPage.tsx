@@ -234,6 +234,11 @@ export default function SourcesPage() {
                         color={source.is_enabled ? "success" : "default"}
                       />
                       <Chip size="small" label={source.config.status} color="info" />
+                      {source.parser_definition_id ? (
+                        <Chip size="small" label={`parser: ${source.parser_definition_name ?? source.parser_definition_id}`} color="secondary" />
+                      ) : (
+                        <Chip size="small" label="parser: none" variant="outlined" />
+                      )}
                     </Stack>
                   </Box>
                 ))}

@@ -18,7 +18,7 @@ from tenant_data.tasks import ingest_source_task
 
 
 class SourceViewSet(viewsets.ModelViewSet):
-    queryset = Source.objects.select_related("config", "dedup_policy").all()
+    queryset = Source.objects.select_related("config", "dedup_policy", "parser_definition").all()
     serializer_class = SourceSerializer
     permission_classes = [RoleBasedWritePermission]
     write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER)
@@ -153,7 +153,12 @@ class WebhookIngestionView(APIView):
         return True
 
     def post(self, request, source_id):
-        source = Source.objects.select_related("config", "dedup_policy").filter(id=source_id).first()
+        source = Source.objects.select_related(
+            "config",
+            "dedup_policy",
+            "parser_definition",
+            "parser_definition__active_revision",
+        ).filter(id=source_id).first()
         if not source:
             return Response({"detail": "Source non trovata"}, status=status.HTTP_404_NOT_FOUND)
 

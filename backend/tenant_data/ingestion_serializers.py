@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.core.exceptions import ObjectDoesNotExist
 
 from tenant_data.models import DedupPolicy, IngestionEventLog, IngestionRun, Source, SourceConfig
 
@@ -33,6 +34,8 @@ class SourceSerializer(serializers.ModelSerializer):
     config = SourceConfigSerializer(required=False)
     dedup_policy = DedupPolicySerializer(required=False)
     webhook_endpoint = serializers.SerializerMethodField()
+    parser_definition_id = serializers.SerializerMethodField()
+    parser_definition_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Source
@@ -45,6 +48,8 @@ class SourceSerializer(serializers.ModelSerializer):
             "config",
             "dedup_policy",
             "webhook_endpoint",
+            "parser_definition_id",
+            "parser_definition_name",
             "created_at",
             "updated_at",
         )
@@ -126,6 +131,20 @@ class SourceSerializer(serializers.ModelSerializer):
 
         base = f"http://localhost"
         return f"{base}{path}"
+
+    def get_parser_definition_id(self, obj):
+        try:
+            parser_definition = obj.parser_definition
+        except ObjectDoesNotExist:
+            parser_definition = None
+        return getattr(parser_definition, "id", None)
+
+    def get_parser_definition_name(self, obj):
+        try:
+            parser_definition = obj.parser_definition
+        except ObjectDoesNotExist:
+            parser_definition = None
+        return getattr(parser_definition, "name", None)
 
 
 class IngestionEventLogSerializer(serializers.ModelSerializer):

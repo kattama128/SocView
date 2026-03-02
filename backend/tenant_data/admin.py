@@ -12,6 +12,8 @@ from .models import (
     DedupPolicy,
     IngestionEventLog,
     IngestionRun,
+    ParserDefinition,
+    ParserRevision,
     Source,
     SourceConfig,
     Tag,
@@ -39,7 +41,7 @@ class TagAdmin(admin.ModelAdmin):
 
 @admin.register(Alert)
 class AlertAdmin(admin.ModelAdmin):
-    list_display = ("id", "title", "severity", "current_state", "source_name", "event_timestamp")
+    list_display = ("id", "title", "severity", "current_state", "source_name", "event_timestamp", "parse_error_detail")
     list_filter = ("severity", "current_state")
     search_fields = ("title", "source_name", "source_id", "dedup_fingerprint")
 
@@ -81,6 +83,19 @@ class SourceAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "type", "is_enabled", "updated_at")
     list_filter = ("type", "is_enabled")
     search_fields = ("name",)
+
+
+@admin.register(ParserDefinition)
+class ParserDefinitionAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "source", "is_enabled", "active_revision", "updated_at")
+    list_filter = ("is_enabled",)
+    search_fields = ("name", "source__name")
+
+
+@admin.register(ParserRevision)
+class ParserRevisionAdmin(admin.ModelAdmin):
+    list_display = ("id", "parser_definition", "version", "created_by", "rollback_from", "created_at")
+    search_fields = ("parser_definition__name", "parser_definition__source__name")
 
 
 @admin.register(SourceConfig)

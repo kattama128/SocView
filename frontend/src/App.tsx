@@ -6,6 +6,7 @@ import AdminConfigPage from "./pages/AdminConfigPage";
 import AlertDetailPage from "./pages/AlertDetailPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
+import ParserPage from "./pages/ParserPage";
 import SourcesPage from "./pages/SourcesPage";
 import TenantPage from "./pages/TenantPage";
 
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/tenant" element={<TenantPage />} />
           <Route path="/fonti" element={<SourcesPage />} />
+          <Route path="/parser" element={<ParserPage />} />
           <Route path="/alerts/:alertId" element={<AlertDetailPage />} />
           <Route path="/configurazione" element={<AdminConfigPage />} />
         </Route>

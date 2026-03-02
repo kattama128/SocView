@@ -13,6 +13,8 @@ import {
   MenuItem,
   Stack,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
@@ -51,6 +53,7 @@ export default function AlertDetailPage() {
   const [selectedAssignee, setSelectedAssignee] = useState<number | "">("");
   const [commentBody, setCommentBody] = useState("");
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [payloadView, setPayloadView] = useState<"raw" | "parsed">("raw");
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -158,20 +161,45 @@ export default function AlertDetailPage() {
 
           <Divider sx={{ my: 2 }} />
 
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <Typography variant="subtitle2">Payload raw</Typography>
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+            <Typography variant="subtitle2">Vista payload</Typography>
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={payloadView}
+              onChange={(_, value) => {
+                if (value === "raw" || value === "parsed") {
+                  setPayloadView(value);
+                }
+              }}
+            >
+              <ToggleButton value="raw">Raw</ToggleButton>
+              <ToggleButton value="parsed">Parsed</ToggleButton>
+            </ToggleButtonGroup>
+          </Stack>
+
+          {alertData.parse_error_detail ? (
+            <Alert severity="error" sx={{ mb: 1 }}>
+              Errore parsing: {alertData.parse_error_detail}
+            </Alert>
+          ) : null}
+
+          <Box component="pre" sx={{ overflowX: "auto", bgcolor: "#f8f9fa", p: 1 }}>
+            {payloadView === "raw"
+              ? JSON.stringify(alertData.raw_payload ?? {}, null, 2)
+              : JSON.stringify(alertData.parsed_payload ?? null, null, 2)}
+          </Box>
+
+          {payloadView === "parsed" ? (
+            <>
+              <Typography variant="subtitle2" sx={{ mt: 1 }}>
+                Field schema
+              </Typography>
               <Box component="pre" sx={{ overflowX: "auto", bgcolor: "#f8f9fa", p: 1 }}>
-                {JSON.stringify(alertData.raw_payload ?? {}, null, 2)}
+                {JSON.stringify(alertData.parsed_field_schema ?? [], null, 2)}
               </Box>
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <Typography variant="subtitle2">Payload parsed</Typography>
-              <Box component="pre" sx={{ overflowX: "auto", bgcolor: "#f8f9fa", p: 1 }}>
-                {JSON.stringify(alertData.parsed_payload ?? {}, null, 2)}
-              </Box>
-            </Grid>
-          </Grid>
+            </>
+          ) : null}
         </CardContent>
       </Card>
 

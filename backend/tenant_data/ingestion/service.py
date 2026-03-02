@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
 
@@ -76,6 +77,18 @@ def _fetch_events(source):
     raise ValueError(f"Tipo fonte non supportato per polling: {source.type}")
 
 
+def _get_source_parser_config(source):
+    try:
+        parser_definition = source.parser_definition
+    except ObjectDoesNotExist:
+        return None
+    if not parser_definition or not parser_definition.is_enabled:
+        return None
+    if not parser_definition.active_revision:
+        return None
+    return parser_definition.active_revision.config_data
+
+
 def test_source_connection(source):
     if source.type == Source.Type.IMAP:
         return test_imap_connection(source)
@@ -99,6 +112,7 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
     policy = getattr(source, "dedup_policy", None)
     if policy is None:
         policy = DedupPolicy.objects.create(source=source)
+    parser_config = _get_source_parser_config(source)
 
     try:
         events = pushed_events if pushed_events is not None else _fetch_events(source)
@@ -110,12 +124,15 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
         for raw_event in events:
             summary.processed += 1
             parse_error = ""
+            field_schema = []
 
             try:
-                parsed_event = parse_event(raw_event)
+                parsed_result = parse_event(raw_event, parser_config=parser_config)
+                parsed_event = parsed_result.parsed_payload
+                field_schema = parsed_result.field_schema
             except Exception as exc:  # parser failure should still create alert
                 parse_error = str(exc)
-                parsed_event = {"_parse_error": parse_error}
+                parsed_event = None
 
             try:
                 fingerprint = compute_fingerprint(source, policy, raw_event, parsed_event)
@@ -134,7 +151,9 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
                             "source_name": source.name,
                             "source_id": source_id,
                             "raw_payload": raw_event if isinstance(raw_event, dict) else {"value": str(raw_event)},
-                            "parsed_payload": parsed_event if isinstance(parsed_event, dict) else {},
+                            "parsed_payload": parsed_event if isinstance(parsed_event, dict) else None,
+                            "parsed_field_schema": field_schema,
+                            "parse_error_detail": parse_error,
                             "current_state": default_state,
                         },
                     )
@@ -166,7 +185,9 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
 
                         alert.source_id = source_id
                         alert.raw_payload = raw_event if isinstance(raw_event, dict) else {"value": str(raw_event)}
-                        alert.parsed_payload = parsed_event if isinstance(parsed_event, dict) else {}
+                        alert.parsed_payload = parsed_event if isinstance(parsed_event, dict) else None
+                        alert.parsed_field_schema = field_schema
+                        alert.parse_error_detail = parse_error
                         alert.severity = severity
                         alert.event_timestamp = event_timestamp
                         alert.save(
@@ -174,6 +195,8 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
                                 "source_id",
                                 "raw_payload",
                                 "parsed_payload",
+                                "parsed_field_schema",
+                                "parse_error_detail",
                                 "severity",
                                 "event_timestamp",
                                 "updated_at",

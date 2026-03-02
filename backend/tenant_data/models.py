@@ -65,7 +65,9 @@ class Alert(TimeStampedModel):
     source_name = models.CharField(max_length=120)
     source_id = models.CharField(max_length=120, blank=True)
     raw_payload = models.JSONField(default=dict, blank=True)
-    parsed_payload = models.JSONField(default=dict, blank=True)
+    parsed_payload = models.JSONField(null=True, blank=True, default=None)
+    parsed_field_schema = models.JSONField(default=list, blank=True)
+    parse_error_detail = models.TextField(blank=True)
     current_state = models.ForeignKey(AlertState, on_delete=models.PROTECT, related_name="alerts")
     dedup_fingerprint = models.CharField(max_length=255, db_index=True, blank=True)
 
@@ -197,6 +199,58 @@ class Source(TimeStampedModel):
 
     def __str__(self):
         return f"{self.name} ({self.type})"
+
+
+class ParserDefinition(TimeStampedModel):
+    source = models.OneToOneField(Source, on_delete=models.CASCADE, related_name="parser_definition")
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    is_enabled = models.BooleanField(default=True)
+    active_revision = models.ForeignKey(
+        "ParserRevision",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ("name", "id")
+
+    def __str__(self):
+        return f"{self.name} (source={self.source_id})"
+
+
+class ParserRevision(TimeStampedModel):
+    parser_definition = models.ForeignKey(
+        ParserDefinition,
+        on_delete=models.CASCADE,
+        related_name="revisions",
+    )
+    version = models.PositiveIntegerField()
+    config_text = models.TextField()
+    config_data = models.JSONField(default=dict, blank=True)
+    rollback_from = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rollback_children",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="parser_revisions",
+    )
+
+    class Meta:
+        ordering = ("-version", "-id")
+        unique_together = (("parser_definition", "version"),)
+
+    def __str__(self):
+        return f"ParserRevision {self.parser_definition_id} v{self.version}"
 
 
 class SourceConfig(TimeStampedModel):

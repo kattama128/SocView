@@ -31,6 +31,8 @@ export type Source = {
   config: SourceConfig;
   dedup_policy: DedupPolicy;
   webhook_endpoint: string | null;
+  parser_definition_id: number | null;
+  parser_definition_name: string | null;
   created_at: string;
   updated_at: string;
 };
