@@ -1,10 +1,11 @@
-# SocView (M3)
+# SocView (M4)
 
 Monorepo SOC multi-tenant con:
 - Backend: Django + DRF + SimpleJWT
 - Multi-tenant: django-tenants (`public` + tenant schema)
 - DB: PostgreSQL
 - Async: Celery + Redis
+- Ricerca: Full-text + filtri dinamici (Elastic opzionale, fallback Postgres)
 - Frontend: React + TypeScript + Material UI (IT)
 - Reverse proxy: Nginx
 
@@ -21,6 +22,12 @@ Monorepo SOC multi-tenant con:
 ```bash
 cp .env.example .env
 docker compose up -d --build
+```
+
+Con Elastic abilitato (profilo opzionale):
+
+```bash
+docker compose --profile elastic up -d --build
 ```
 
 URL:
@@ -63,6 +70,7 @@ Seed crea/aggiorna:
 - stati/tag/alert demo
 - fonti ingestion demo (`imap`, `rest`, `webhook`)
 - parser definition + parser revision demo per fonte
+- saved searches demo per `manager` e `analyst`
 
 ## Credenziali demo
 
@@ -85,6 +93,102 @@ Frontend build:
 cd frontend
 npm run build
 cd ..
+```
+
+Check migrazioni:
+
+```bash
+docker compose exec backend python manage.py migrate_schemas --shared --check
+docker compose exec backend python manage.py migrate_schemas --tenant --check
+```
+
+## Search M4 (full-text + dynamic filters + saved searches)
+
+### Abilitare/disabilitare Elastic
+
+Abilitare Elastic (profilo compose):
+
+```bash
+docker compose --profile elastic up -d elasticsearch
+```
+
+Disabilitare Elastic:
+
+```bash
+docker compose stop elasticsearch
+```
+
+Parametri `.env`:
+
+```env
+SEARCH_BACKEND=auto
+ELASTICSEARCH_URL=http://elasticsearch:9200
+ELASTICSEARCH_INDEX_PREFIX=socview-alerts
+SEARCH_INDEX_SYNC_ENABLED=true
+SEARCH_INDEX_SYNC_ASYNC=true
+```
+
+- `SEARCH_BACKEND=auto`: usa Elastic se raggiungibile, altrimenti fallback Postgres.
+- `SEARCH_BACKEND=postgres`: forza fallback Postgres.
+- `SEARCH_BACKEND=elastic`: forza Elastic.
+
+### Endpoint M4
+
+- `POST /api/alerts/search/`
+- `GET /api/alerts/field-schemas/`
+- `GET /api/alerts/field-schemas/?source_name=<SOURCE_NAME>`
+- `GET/POST/PATCH/DELETE /api/alerts/saved-searches/`
+
+### Esempi query search API
+
+Ricerca full-text base:
+
+```bash
+curl -X POST "http://tenant1.localhost/api/alerts/search/" \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "vpn",
+    "page": 1,
+    "page_size": 20
+  }'
+```
+
+Ricerca con filtri dinamici per fonte:
+
+```bash
+curl -X POST "http://tenant1.localhost/api/alerts/search/" \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_name": "REST Demo Feed",
+    "dynamic_filters": [
+      { "field": "event.id", "type": "keyword", "operator": "contains", "value": "rest-demo" },
+      { "field": "event.severity", "type": "keyword", "operator": "eq", "value": "high" }
+    ],
+    "ordering": "-event_timestamp",
+    "page": 1,
+    "page_size": 50
+  }'
+```
+
+Salvare una ricerca utente:
+
+```bash
+curl -X POST "http://tenant1.localhost/api/alerts/saved-searches/" \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Alert aperti critici",
+    "text_query": "vpn",
+    "source_name": "vpn-gateway",
+    "state_id": null,
+    "severity": "high",
+    "is_active": true,
+    "dynamic_filters": [],
+    "ordering": "-event_timestamp",
+    "visible_columns": ["title", "severity", "state", "event_timestamp"]
+  }'
 ```
 
 ## Ingestion e parsing (M2 + M3)
@@ -199,6 +303,7 @@ curl -X POST "http://tenant1.localhost/api/ingestion/parsers/<PARSER_ID>/rollbac
 
 Host tenant (`tenant1.localhost`):
 - `/tenant` lista alert
+- `/tenant` ricerca full-text + filtri dinamici per fonte + saved searches
 - `/alerts/:id` dettaglio alert con switch Raw/Parsed + errore parsing
 - `/fonti` gestione fonti ingestion
 - `/parser` editor parser (config textarea, preview, revisioni, rollback)
@@ -211,17 +316,20 @@ Host tenant (`tenant1.localhost`):
 - SOC Analyst: operazioni alert; non può gestire parser/fonti
 - ReadOnly: sola lettura
 
-## Checklist accettazione M3
+## Checklist accettazione M4
 
-- Creo/modifico parser e vedo preview:
-  - API: `POST /api/ingestion/parsers/`, `PATCH /api/ingestion/parsers/{id}/`, `POST /preview/`
-  - UI: pagina `/parser`
-- Rollback parser funziona:
-  - API: `POST /api/ingestion/parsers/{id}/rollback/`
-  - verifica nuova revisione attiva con versione incrementata
-- Evento che rompe parser genera `#unparsed` e errore visibile:
-  - API: alert con `parsed_payload=null` + `parse_error_detail` valorizzato
-  - UI: `/alerts/:id` mostra errore parsing + payload parsed nullo
+- Full-text su raw/parsed funziona:
+  - API: `POST /api/alerts/search/` con `text`
+  - UI: `/tenant` campo "Ricerca testo"
+- Filtri dinamici per fonte funzionano:
+  - API: `GET /api/alerts/field-schemas/?source_name=<source>`
+  - UI: `/tenant` sezione "Filtri dinamici"
+- Saved searches persistono per utente:
+  - API: CRUD `saved-searches`
+  - UI: `/tenant` sezione "Saved Searches"
+- Elastic on/off senza rotture:
+  - con `elasticsearch` up: response `backend=elastic`
+  - con `elasticsearch` stopped: response `backend=postgres`
 
 ## Script helper
 

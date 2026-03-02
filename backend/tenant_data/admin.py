@@ -14,6 +14,7 @@ from .models import (
     IngestionRun,
     ParserDefinition,
     ParserRevision,
+    SavedSearch,
     Source,
     SourceConfig,
     Tag,
@@ -136,3 +137,10 @@ class IngestionRunAdmin(admin.ModelAdmin):
 class IngestionEventLogAdmin(admin.ModelAdmin):
     list_display = ("id", "run", "source", "action", "alert", "created_at")
     list_filter = ("action",)
+
+
+@admin.register(SavedSearch)
+class SavedSearchAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "name", "source_name", "ordering", "updated_at")
+    list_filter = ("severity",)
+    search_fields = ("name", "user__username", "source_name")

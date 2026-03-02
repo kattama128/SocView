@@ -2,7 +2,7 @@ from datetime import timedelta
 import json
 
 from django.contrib.auth import get_user_model
-from django.test import RequestFactory
+from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIClient
@@ -464,3 +464,153 @@ class ParserApiTests(BaseTenantTestCase):
         self.assertEqual(rollback_response.status_code, 200)
         self.assertEqual(rollback_response.data["active_revision_detail"]["version"], 3)
         self.assertEqual(rollback_response.data["active_revision_detail"]["rollback_from_version"], 1)
+
+
+@override_settings(SEARCH_BACKEND="postgres", SEARCH_INDEX_SYNC_ASYNC=False)
+class SearchApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="search-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+        self.state = AlertState.objects.create(name="Nuovo", order=0, is_final=False, is_enabled=True)
+
+        self.alert_1 = Alert.objects.create(
+            title="EDR suspicious process",
+            severity="high",
+            event_timestamp=timezone.now(),
+            source_name="edr-feed",
+            source_id="evt-1",
+            raw_payload={"message": "Ransomware behavior detected on host ws-11"},
+            parsed_payload={
+                "event": {
+                    "id": "evt-1",
+                    "risk": 91,
+                    "success": False,
+                    "timestamp": "2026-01-10T10:00:00Z",
+                }
+            },
+            parsed_field_schema=[
+                {"field": "event.id", "type": "string"},
+                {"field": "event.risk", "type": "int"},
+                {"field": "event.success", "type": "bool"},
+                {"field": "event.timestamp", "type": "string"},
+            ],
+            current_state=self.state,
+            dedup_fingerprint="search-1",
+        )
+
+        self.alert_2 = Alert.objects.create(
+            title="Firewall unusual traffic",
+            severity="medium",
+            event_timestamp=timezone.now(),
+            source_name="firewall-feed",
+            source_id="evt-2",
+            raw_payload={"message": "Outbound traffic above threshold"},
+            parsed_payload={
+                "event": {
+                    "id": "evt-2",
+                    "risk": 35,
+                    "success": True,
+                    "timestamp": "2026-01-09T07:30:00Z",
+                }
+            },
+            parsed_field_schema=[
+                {"field": "event.id", "type": "string"},
+                {"field": "event.risk", "type": "int"},
+                {"field": "event.success", "type": "bool"},
+                {"field": "event.timestamp", "type": "string"},
+            ],
+            current_state=self.state,
+            dedup_fingerprint="search-2",
+        )
+
+    def test_search_full_text_and_dynamic_filters(self):
+        response = self.client.post(
+            "/api/alerts/search/",
+            data={
+                "text": "ransomware",
+                "source_name": "edr-feed",
+                "dynamic_filters": [
+                    {"field": "event.risk", "type": "number", "operator": "gte", "value": 80},
+                    {"field": "event.success", "type": "boolean", "operator": "eq", "value": False},
+                ],
+                "page": 1,
+                "page_size": 20,
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["backend"], "postgres")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.alert_1.id)
+
+    def test_source_field_schema_endpoint(self):
+        response = self.client.get(
+            "/api/alerts/field-schemas/?source_name=edr-feed",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        fields = response.data[0]["fields"]
+        fields_map = {item["field"]: item["type"] for item in fields}
+        self.assertEqual(fields_map.get("event.id"), "keyword")
+        self.assertEqual(fields_map.get("event.risk"), "number")
+        self.assertEqual(fields_map.get("event.success"), "boolean")
+        self.assertEqual(fields_map.get("event.timestamp"), "date")
+
+    def test_saved_search_crud_is_user_scoped(self):
+        create_response = self.client.post(
+            "/api/alerts/saved-searches/",
+            data={
+                "name": "Ricerca SOC",
+                "text_query": "ransomware",
+                "source_name": "edr-feed",
+                "state_id": self.state.id,
+                "severity": "high",
+                "is_active": True,
+                "dynamic_filters": [{"field": "event.risk", "type": "number", "operator": "gte", "value": 80}],
+                "ordering": "-event_timestamp",
+                "visible_columns": ["title", "severity", "state", "event_timestamp"],
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        saved_search_id = create_response.data["id"]
+
+        list_response = self.client.get("/api/alerts/saved-searches/", HTTP_HOST="test.localhost")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.data), 1)
+        self.assertEqual(list_response.data[0]["name"], "Ricerca SOC")
+
+        patch_response = self.client.patch(
+            f"/api/alerts/saved-searches/{saved_search_id}/",
+            data={"name": "Ricerca SOC aggiornata"},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertEqual(patch_response.data["name"], "Ricerca SOC aggiornata")
+
+        other_user = get_user_model().objects.create_user(
+            username="search-other",
+            password="ReadOnly123!",
+            role=get_user_model().Role.READ_ONLY,
+        )
+        self.client.force_authenticate(user=other_user)
+        isolated_list = self.client.get("/api/alerts/saved-searches/", HTTP_HOST="test.localhost")
+        self.assertEqual(isolated_list.status_code, 200)
+        self.assertEqual(len(isolated_list.data), 0)
+
+        self.client.force_authenticate(user=self.manager)
+        delete_response = self.client.delete(
+            f"/api/alerts/saved-searches/{saved_search_id}/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(delete_response.status_code, 204)
+        final_list = self.client.get("/api/alerts/saved-searches/", HTTP_HOST="test.localhost")
+        self.assertEqual(len(final_list.data), 0)

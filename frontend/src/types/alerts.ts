@@ -102,3 +102,52 @@ export type AuditLog = {
   ip_address: string | null;
   user_agent: string;
 };
+
+export type DynamicFilterType = "keyword" | "number" | "date" | "boolean";
+
+export type DynamicFilter = {
+  field: string;
+  type: DynamicFilterType;
+  operator: "eq" | "contains" | "in" | "gt" | "gte" | "lt" | "lte";
+  value: unknown;
+};
+
+export type SearchRequest = {
+  text?: string;
+  source_name?: string;
+  state_id?: number;
+  severity?: Alert["severity"];
+  is_active?: boolean;
+  dynamic_filters?: DynamicFilter[];
+  ordering?: string;
+  page?: number;
+  page_size?: number;
+};
+
+export type SearchResponse = {
+  backend: string;
+  count: number;
+  page: number;
+  page_size: number;
+  results: Alert[];
+};
+
+export type SourceFieldSchema = {
+  source_name: string;
+  fields: Array<{ field: string; type: DynamicFilterType }>;
+};
+
+export type SavedSearch = {
+  id: number;
+  name: string;
+  text_query: string;
+  source_name: string;
+  state_id: number | null;
+  severity: "" | Alert["severity"];
+  is_active: boolean | null;
+  dynamic_filters: DynamicFilter[];
+  ordering: string;
+  visible_columns: string[];
+  created_at: string;
+  updated_at: string;
+};

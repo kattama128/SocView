@@ -10,6 +10,7 @@ from tenant_data.models import (
     Attachment,
     AuditLog,
     Comment,
+    SavedSearch,
     Tag,
 )
 
@@ -203,3 +204,75 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "ip_address",
             "user_agent",
         )
+
+
+class DynamicFilterSerializer(serializers.Serializer):
+    field = serializers.CharField(max_length=255)
+    type = serializers.ChoiceField(choices=("keyword", "number", "date", "boolean"))
+    operator = serializers.ChoiceField(
+        choices=("eq", "contains", "in", "gt", "gte", "lt", "lte"),
+        default="eq",
+    )
+    value = serializers.JSONField()
+
+    def validate(self, attrs):
+        filter_type = attrs.get("type")
+        operator = attrs.get("operator")
+        value = attrs.get("value")
+
+        if filter_type == "boolean" and operator != "eq":
+            raise serializers.ValidationError("Filtri boolean supportano solo operator eq")
+
+        if filter_type == "keyword" and operator in {"gt", "gte", "lt", "lte"}:
+            raise serializers.ValidationError("Filtri keyword supportano solo eq/contains/in")
+
+        if filter_type in {"number", "date"} and operator not in {"eq", "gt", "gte", "lt", "lte"}:
+            raise serializers.ValidationError("Filtri number/date supportano solo eq/gt/gte/lt/lte")
+
+        if operator == "in" and not isinstance(value, list):
+            raise serializers.ValidationError("Operatore in richiede una lista nel campo value")
+
+        return attrs
+
+
+class AlertSearchRequestSerializer(serializers.Serializer):
+    text = serializers.CharField(required=False, allow_blank=True)
+    source_name = serializers.CharField(required=False, allow_blank=True)
+    state_id = serializers.IntegerField(required=False, min_value=1)
+    severity = serializers.ChoiceField(choices=Alert.Severity.values, required=False)
+    is_active = serializers.BooleanField(required=False)
+    dynamic_filters = DynamicFilterSerializer(many=True, required=False)
+    ordering = serializers.CharField(required=False, allow_blank=True, default="-event_timestamp")
+    page = serializers.IntegerField(required=False, min_value=1, default=1)
+    page_size = serializers.IntegerField(required=False, min_value=1, max_value=100, default=25)
+
+
+class SavedSearchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SavedSearch
+        fields = (
+            "id",
+            "name",
+            "text_query",
+            "source_name",
+            "state_id",
+            "severity",
+            "is_active",
+            "dynamic_filters",
+            "ordering",
+            "visible_columns",
+            "created_at",
+            "updated_at",
+        )
+
+    def validate_dynamic_filters(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("dynamic_filters deve essere una lista")
+        serializer = DynamicFilterSerializer(data=value, many=True)
+        serializer.is_valid(raise_exception=True)
+        return value
+
+    def validate_visible_columns(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("visible_columns deve essere una lista")
+        return value

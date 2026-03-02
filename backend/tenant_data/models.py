@@ -347,6 +347,30 @@ class IngestionEventLog(TimeStampedModel):
         return f"{self.source.name} {self.action}"
 
 
+class SavedSearch(TimeStampedModel):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="saved_searches",
+    )
+    name = models.CharField(max_length=150)
+    text_query = models.CharField(max_length=255, blank=True)
+    source_name = models.CharField(max_length=150, blank=True)
+    state_id = models.PositiveBigIntegerField(null=True, blank=True)
+    severity = models.CharField(max_length=20, choices=Alert.Severity.choices, blank=True)
+    is_active = models.BooleanField(null=True, blank=True)
+    dynamic_filters = models.JSONField(default=list, blank=True)
+    ordering = models.CharField(max_length=64, default="-event_timestamp")
+    visible_columns = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ("name", "id")
+        unique_together = (("user", "name"),)
+
+    def __str__(self):
+        return f"{self.user_id}:{self.name}"
+
+
 class TenantPlaceholder(models.Model):
     label = models.CharField(max_length=120, default="placeholder")
     created_at = models.DateTimeField(auto_now_add=True)

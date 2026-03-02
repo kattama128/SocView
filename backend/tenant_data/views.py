@@ -4,17 +4,31 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.dateparse import parse_datetime
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework.exceptions import ValidationError
-from rest_framework import status, viewsets
+from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from tenant_data.audit import create_audit_log
-from tenant_data.models import Alert, AlertOccurrence, AlertState, AlertTag, Assignment, Attachment, AuditLog, Comment, Tag
+from tenant_data.models import (
+    Alert,
+    AlertOccurrence,
+    AlertState,
+    AlertTag,
+    Assignment,
+    Attachment,
+    AuditLog,
+    Comment,
+    SavedSearch,
+    Tag,
+)
 from tenant_data.permissions import RoleBasedWritePermission
+from tenant_data.search import SearchRequest, build_all_source_field_schemas, build_source_field_schema, search_alerts
 from tenant_data.serializers import (
+    AlertSearchRequestSerializer,
     AlertDetailSerializer,
     AlertListSerializer,
     AlertStateSerializer,
@@ -24,6 +38,7 @@ from tenant_data.serializers import (
     AuditLogSerializer,
     CommentCreateSerializer,
     CommentSerializer,
+    SavedSearchSerializer,
     StateChangeSerializer,
     TagMutationSerializer,
     TagSerializer,
@@ -493,3 +508,127 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
                 queryset = queryset.filter(timestamp__lte=to_parsed)
 
         return queryset
+
+
+class SavedSearchViewSet(viewsets.ModelViewSet):
+    serializer_class = SavedSearchSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return SavedSearch.objects.filter(user=self.request.user).order_by("name", "id")
+
+    def perform_create(self, serializer):
+        saved_search = serializer.save(user=self.request.user)
+        create_audit_log(
+            self.request,
+            action="saved_search.created",
+            obj=saved_search,
+            diff={"name": saved_search.name},
+        )
+
+    def perform_update(self, serializer):
+        old_name = serializer.instance.name
+        saved_search = serializer.save()
+        create_audit_log(
+            self.request,
+            action="saved_search.updated",
+            obj=saved_search,
+            diff={"old_name": old_name, "new_name": saved_search.name},
+        )
+
+    def perform_destroy(self, instance):
+        payload = {"name": instance.name}
+        super().perform_destroy(instance)
+        create_audit_log(
+            self.request,
+            action="saved_search.deleted",
+            obj=instance,
+            diff=payload,
+        )
+
+
+class AlertSearchView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        request=AlertSearchRequestSerializer,
+        responses=inline_serializer(
+            name="AlertSearchResponse",
+            fields={
+                "backend": serializers.CharField(),
+                "count": serializers.IntegerField(),
+                "page": serializers.IntegerField(),
+                "page_size": serializers.IntegerField(),
+                "results": AlertListSerializer(many=True),
+            },
+        ),
+        tags=["Alerts Search"],
+    )
+    def post(self, request):
+        serializer = AlertSearchRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        search_request = SearchRequest(
+            text=payload.get("text", ""),
+            source_name=payload.get("source_name", ""),
+            state_id=payload.get("state_id"),
+            severity=payload.get("severity", ""),
+            is_active=payload.get("is_active"),
+            dynamic_filters=payload.get("dynamic_filters", []),
+            ordering=payload.get("ordering", "-event_timestamp"),
+            page=payload.get("page", 1),
+            page_size=payload.get("page_size", 25),
+        )
+        result = search_alerts(search_request)
+
+        alerts_map = {
+            item.id: item
+            for item in Alert.objects.select_related("current_state")
+            .prefetch_related("alert_tags__tag", "assignment")
+            .filter(id__in=result.alert_ids)
+        }
+        ordered_alerts = [alerts_map[item_id] for item_id in result.alert_ids if item_id in alerts_map]
+
+        data = AlertListSerializer(ordered_alerts, many=True, context={"request": request}).data
+        return Response(
+            {
+                "backend": result.backend,
+                "count": result.total,
+                "page": search_request.page,
+                "page_size": search_request.page_size,
+                "results": data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SourceFieldSchemaView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        responses=inline_serializer(
+            name="SourceFieldSchemaResponse",
+            many=True,
+            fields={
+                "source_name": serializers.CharField(),
+                "fields": inline_serializer(
+                    name="SourceFieldSchemaField",
+                    many=True,
+                    fields={
+                        "field": serializers.CharField(),
+                        "type": serializers.CharField(),
+                    },
+                ),
+            },
+        ),
+        tags=["Alerts Search"],
+    )
+    def get(self, request):
+        source_name = (request.query_params.get("source_name") or "").strip()
+        if source_name:
+            return Response(
+                [{"source_name": source_name, "fields": build_source_field_schema(source_name)}],
+                status=status.HTTP_200_OK,
+            )
+        return Response(build_all_source_field_schemas(), status=status.HTTP_200_OK)

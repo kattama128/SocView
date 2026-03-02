@@ -1,5 +1,17 @@
 import api from "./api";
-import { Alert, AlertState, Attachment, AuditLog, CommentNote, Tag, UserSummary } from "../types/alerts";
+import {
+  Alert,
+  AlertState,
+  Attachment,
+  AuditLog,
+  CommentNote,
+  SavedSearch,
+  SearchRequest,
+  SearchResponse,
+  SourceFieldSchema,
+  Tag,
+  UserSummary,
+} from "../types/alerts";
 
 export type AlertFilters = {
   state?: string;
@@ -11,6 +23,40 @@ export type AlertFilters = {
 export async function fetchAlerts(filters: AlertFilters = {}): Promise<Alert[]> {
   const response = await api.get<Alert[]>("/alerts/alerts/", { params: filters });
   return response.data;
+}
+
+export async function searchAlerts(payload: SearchRequest): Promise<SearchResponse> {
+  const response = await api.post<SearchResponse>("/alerts/search/", payload);
+  return response.data;
+}
+
+export async function fetchSourceFieldSchemas(sourceName?: string): Promise<SourceFieldSchema[]> {
+  const response = await api.get<SourceFieldSchema[]>("/alerts/field-schemas/", {
+    params: sourceName ? { source_name: sourceName } : undefined,
+  });
+  return response.data;
+}
+
+export async function fetchSavedSearches(): Promise<SavedSearch[]> {
+  const response = await api.get<SavedSearch[]>("/alerts/saved-searches/");
+  return response.data;
+}
+
+export async function createSavedSearch(payload: Omit<SavedSearch, "id" | "created_at" | "updated_at">): Promise<SavedSearch> {
+  const response = await api.post<SavedSearch>("/alerts/saved-searches/", payload);
+  return response.data;
+}
+
+export async function updateSavedSearch(
+  savedSearchId: number,
+  payload: Partial<Omit<SavedSearch, "id" | "created_at" | "updated_at">>,
+): Promise<SavedSearch> {
+  const response = await api.patch<SavedSearch>(`/alerts/saved-searches/${savedSearchId}/`, payload);
+  return response.data;
+}
+
+export async function deleteSavedSearch(savedSearchId: number): Promise<void> {
+  await api.delete(`/alerts/saved-searches/${savedSearchId}/`);
 }
 
 export async function fetchAlert(alertId: string): Promise<Alert> {

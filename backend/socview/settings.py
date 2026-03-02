@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -157,6 +158,15 @@ CACHES = {
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/1")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/2")
 CELERY_TIMEZONE = TIME_ZONE
+DEFAULT_SEARCH_BACKEND = "postgres" if "test" in sys.argv else "auto"
+SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", DEFAULT_SEARCH_BACKEND)
+ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
+ELASTICSEARCH_INDEX_PREFIX = os.getenv("ELASTICSEARCH_INDEX_PREFIX", "socview-alerts")
+ELASTICSEARCH_TIMEOUT_SECONDS = int(os.getenv("ELASTICSEARCH_TIMEOUT_SECONDS", "3"))
+SEARCH_INDEX_SYNC_ENABLED = os.getenv("SEARCH_INDEX_SYNC_ENABLED", "true").lower() == "true"
+DEFAULT_SEARCH_INDEX_SYNC_ASYNC = "false" if "test" in sys.argv else "true"
+SEARCH_INDEX_SYNC_ASYNC = os.getenv("SEARCH_INDEX_SYNC_ASYNC", DEFAULT_SEARCH_INDEX_SYNC_ASYNC).lower() == "true"
+
 CELERY_BEAT_SCHEDULE = {
     "heartbeat-every-minute": {
         "task": "core.tasks.heartbeat",

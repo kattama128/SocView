@@ -264,6 +264,7 @@ class Command(BaseCommand):
             DedupPolicy,
             ParserDefinition,
             ParserRevision,
+            SavedSearch,
             Source,
             SourceConfig,
             Tag,
@@ -394,6 +395,54 @@ class Command(BaseCommand):
                     )
                     parser_definition.active_revision = revision
                     parser_definition.save(update_fields=["active_revision", "updated_at"])
+
+        manager_user = users_map.get("manager")
+        analyst_user = users_map.get("analyst")
+        if manager_user:
+            SavedSearch.objects.update_or_create(
+                user=manager_user,
+                name="Alert aperti critici",
+                defaults={
+                    "text_query": "",
+                    "source_name": "",
+                    "state_id": None,
+                    "severity": "critical",
+                    "is_active": True,
+                    "dynamic_filters": [],
+                    "ordering": "-event_timestamp",
+                    "visible_columns": [
+                        "title",
+                        "severity",
+                        "state",
+                        "is_active",
+                        "source_name",
+                        "event_timestamp",
+                    ],
+                },
+            )
+
+        if analyst_user:
+            SavedSearch.objects.update_or_create(
+                user=analyst_user,
+                name="VPN ad alta severita",
+                defaults={
+                    "text_query": "vpn",
+                    "source_name": "vpn-gateway",
+                    "state_id": None,
+                    "severity": "high",
+                    "is_active": True,
+                    "dynamic_filters": [],
+                    "ordering": "-event_timestamp",
+                    "visible_columns": [
+                        "title",
+                        "severity",
+                        "state",
+                        "assignment",
+                        "tags",
+                        "event_timestamp",
+                    ],
+                },
+            )
 
     def handle(self, *args, **options):
         User = get_user_model()
