@@ -1,4 +1,5 @@
 from datetime import timedelta
+from copy import deepcopy
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -60,6 +61,86 @@ DEFAULT_ALERTS = [
     },
 ]
 
+DEFAULT_SOURCES = [
+    {
+        "name": "IMAP Demo Inbox",
+        "type": "imap",
+        "is_enabled": True,
+        "severity_map": {
+            "field": "severity",
+            "default": "medium",
+            "map": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"},
+        },
+        "config": {
+            "poll_interval_seconds": 60,
+            "rate_limit_per_minute": 60,
+            "config_json": {
+                "use_mock": True,
+                "mock_messages": [
+                    {
+                        "event_id": "imap-demo-1",
+                        "subject": "IMAP suspicious login",
+                        "from": "soc@example.local",
+                        "date": "2026-01-10T10:30:00Z",
+                        "severity": "high",
+                        "body": "Tentativo di accesso sospetto su mailbox condivisa.",
+                        "headers": {"x-priority": "1"},
+                        "attachments": [],
+                    },
+                    {
+                        "event_id": "imap-demo-2",
+                        "subject": "IMAP parser failure demo",
+                        "from": "soc@example.local",
+                        "date": "2026-01-10T10:35:00Z",
+                        "severity": "medium",
+                        "body": "Messaggio con parse error simulato",
+                        "force_parse_error": True,
+                        "parse_error_message": "Errore parser simulato da IMAP mock",
+                    },
+                ],
+            },
+        },
+        "dedup": {"fingerprint_fields": ["event_id", "subject"], "strategy": "increment_occurrence"},
+    },
+    {
+        "name": "REST Demo Feed",
+        "type": "rest",
+        "is_enabled": True,
+        "severity_map": {
+            "field": "severity",
+            "default": "medium",
+            "map": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"},
+        },
+        "config": {
+            "poll_interval_seconds": 90,
+            "rate_limit_per_minute": 60,
+            "config_json": {
+                "url": "http://backend:8000/api/ingestion/mock/rest-events/",
+                "method": "GET",
+                "headers": {},
+                "pagination": {"type": "none"},
+            },
+        },
+        "dedup": {"fingerprint_fields": ["event_id"], "strategy": "increment_occurrence"},
+    },
+    {
+        "name": "Webhook Demo",
+        "type": "webhook",
+        "is_enabled": True,
+        "severity_map": {
+            "field": "severity",
+            "default": "medium",
+            "map": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"},
+        },
+        "config": {
+            "poll_interval_seconds": 300,
+            "rate_limit_per_minute": 30,
+            "config_json": {"example": "Webhook push source"},
+        },
+        "dedup": {"fingerprint_fields": ["event_id", "title"], "strategy": "increment_occurrence"},
+    },
+]
+
 
 class Command(BaseCommand):
     help = "Crea tenant e utenti demo per bootstrap locale"
@@ -82,7 +163,18 @@ class Command(BaseCommand):
         return seeded
 
     def _seed_tenant_core_data(self, schema_name, users_map):
-        from tenant_data.models import Alert, AlertOccurrence, AlertState, AlertTag, Assignment, Comment, Tag
+        from tenant_data.models import (
+            Alert,
+            AlertOccurrence,
+            AlertState,
+            AlertTag,
+            Assignment,
+            Comment,
+            DedupPolicy,
+            Source,
+            SourceConfig,
+            Tag,
+        )
 
         states_by_name = {}
         for state_payload in DEFAULT_STATES:
@@ -146,6 +238,40 @@ class Command(BaseCommand):
                 alert=alert,
                 body=alert_payload["comment"],
                 defaults={"author": users_map.get("manager") or assigned_to},
+            )
+
+        for source_payload in DEFAULT_SOURCES:
+            config_json = deepcopy(source_payload["config"]["config_json"])
+            if source_payload["type"] == "rest":
+                headers = dict(config_json.get("headers", {}))
+                headers.setdefault("Host", f"{schema_name}.localhost")
+                config_json["headers"] = headers
+
+            source, _ = Source.objects.update_or_create(
+                name=source_payload["name"],
+                type=source_payload["type"],
+                defaults={
+                    "is_enabled": source_payload["is_enabled"],
+                    "severity_map": source_payload["severity_map"],
+                },
+            )
+
+            SourceConfig.objects.update_or_create(
+                source=source,
+                defaults={
+                    "config_json": config_json,
+                    "poll_interval_seconds": source_payload["config"]["poll_interval_seconds"],
+                    "rate_limit_per_minute": source_payload["config"]["rate_limit_per_minute"],
+                    "secrets_ref": "",
+                },
+            )
+
+            DedupPolicy.objects.update_or_create(
+                source=source,
+                defaults={
+                    "fingerprint_fields": source_payload["dedup"]["fingerprint_fields"],
+                    "strategy": source_payload["dedup"]["strategy"],
+                },
             )
 
     def handle(self, *args, **options):

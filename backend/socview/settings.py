@@ -161,5 +161,9 @@ CELERY_BEAT_SCHEDULE = {
     "heartbeat-every-minute": {
         "task": "core.tasks.heartbeat",
         "schedule": 60.0,
-    }
+    },
+    "ingestion-scheduler-every-30-seconds": {
+        "task": "tenant_data.tasks.run_ingestion_scheduler",
+        "schedule": 30.0,
+    },
 }

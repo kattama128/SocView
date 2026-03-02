@@ -9,3 +9,7 @@ export function canManageStates(role?: string): boolean {
 export function canManageTags(role?: string): boolean {
   return role === "SUPER_ADMIN" || role === "SOC_MANAGER" || role === "SOC_ANALYST";
 }
+
+export function canManageSources(role?: string): boolean {
+  return role === "SUPER_ADMIN" || role === "SOC_MANAGER";
+}

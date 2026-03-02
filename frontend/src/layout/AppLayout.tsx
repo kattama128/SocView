@@ -2,6 +2,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import DomainIcon from "@mui/icons-material/Domain";
 import LogoutIcon from "@mui/icons-material/Logout";
 import SettingsIcon from "@mui/icons-material/Settings";
+import SensorsIcon from "@mui/icons-material/Sensors";
 import {
   AppBar,
   Box,
@@ -18,7 +19,7 @@ import { useMemo } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { useAuth } from "../context/AuthContext";
-import { canManageStates, canManageTags } from "../services/roleUtils";
+import { canManageSources, canManageStates, canManageTags } from "../services/roleUtils";
 
 const drawerWidth = 240;
 
@@ -32,6 +33,10 @@ export default function AppLayout() {
       { label: "Home", icon: <DashboardIcon />, to: "/" },
       { label: "Alert", icon: <DomainIcon />, to: "/tenant" },
     ];
+
+    if (canManageSources(user?.role)) {
+      baseItems.push({ label: "Fonti", icon: <SensorsIcon />, to: "/fonti" });
+    }
 
     if (canManageStates(user?.role) || canManageTags(user?.role)) {
       baseItems.push({ label: "Admin", icon: <SettingsIcon />, to: "/configurazione" });
