@@ -4,11 +4,149 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from django_tenants.utils import get_tenant_domain_model, get_tenant_model
+from django_tenants.utils import get_tenant_domain_model, get_tenant_model, schema_context
+
+
+DEFAULT_STATES = [
+    {"name": "Nuovo", "order": 0, "is_final": False, "is_enabled": True},
+    {"name": "In lavorazione", "order": 1, "is_final": False, "is_enabled": True},
+    {"name": "Risolto", "order": 2, "is_final": True, "is_enabled": True},
+    {"name": "Falso positivo", "order": 3, "is_final": True, "is_enabled": True},
+]
+
+DEFAULT_TAGS = [
+    {"name": "network", "scope": "alert", "color": "#1976d2", "metadata": {}},
+    {"name": "malware", "scope": "alert", "color": "#d32f2f", "metadata": {}},
+    {"name": "phishing", "scope": "alert", "color": "#ed6c02", "metadata": {}},
+    {"name": "critical", "scope": "alert", "color": "#7b1fa2", "metadata": {}},
+]
+
+DEFAULT_ALERTS = [
+    {
+        "title": "Tentativi login anomali su VPN",
+        "severity": "high",
+        "source_name": "vpn-gateway",
+        "source_id": "vpn-001",
+        "raw_payload": {"failed_logins": 45, "ip": "203.0.113.10"},
+        "parsed_payload": {"country": "IT", "username": "ops.user"},
+        "state": "Nuovo",
+        "tags": ["network", "critical"],
+        "assigned_to": "analyst",
+        "comment": "Verificare blocco IP e MFA account coinvolto.",
+    },
+    {
+        "title": "Possibile malware rilevato endpoint",
+        "severity": "critical",
+        "source_name": "edr",
+        "source_id": "edr-992",
+        "raw_payload": {"hash": "abc123", "host": "ws-finance-07"},
+        "parsed_payload": {"family": "emotet", "score": 95},
+        "state": "In lavorazione",
+        "tags": ["malware", "critical"],
+        "assigned_to": "manager",
+        "comment": "Isolare host e avviare triage forense.",
+    },
+    {
+        "title": "Segnalazione phishing da mailbox SOC",
+        "severity": "medium",
+        "source_name": "mail-sec",
+        "source_id": "mail-442",
+        "raw_payload": {"sender": "billing@example.net", "attachments": 1},
+        "parsed_payload": {"url_reputation": "suspicious"},
+        "state": "Risolto",
+        "tags": ["phishing"],
+        "assigned_to": "analyst",
+        "comment": "Campagna bloccata e IOC aggiunti in deny-list.",
+    },
+]
 
 
 class Command(BaseCommand):
     help = "Crea tenant e utenti demo per bootstrap locale"
+
+    def _upsert_users(self, users_payload):
+        User = get_user_model()
+        seeded = {}
+
+        for payload in users_payload:
+            user, _ = User.objects.get_or_create(username=payload["username"], defaults={"email": payload["email"]})
+            user.email = payload["email"]
+            user.role = payload["role"]
+            user.is_superuser = payload["is_superuser"]
+            user.is_staff = payload["is_staff"]
+            user.is_active = True
+            user.set_password(payload["password"])
+            user.save()
+            seeded[payload["username"]] = user
+
+        return seeded
+
+    def _seed_tenant_core_data(self, schema_name, users_map):
+        from tenant_data.models import Alert, AlertOccurrence, AlertState, AlertTag, Assignment, Comment, Tag
+
+        states_by_name = {}
+        for state_payload in DEFAULT_STATES:
+            state, _ = AlertState.objects.update_or_create(
+                name=state_payload["name"],
+                defaults={
+                    "order": state_payload["order"],
+                    "is_final": state_payload["is_final"],
+                    "is_enabled": state_payload["is_enabled"],
+                },
+            )
+            states_by_name[state.name] = state
+
+        tags_by_name = {}
+        for tag_payload in DEFAULT_TAGS:
+            tag, _ = Tag.objects.update_or_create(
+                name=tag_payload["name"],
+                scope=tag_payload["scope"],
+                defaults={
+                    "color": tag_payload["color"],
+                    "metadata": tag_payload["metadata"],
+                },
+            )
+            tags_by_name[tag.name] = tag
+
+        now = timezone.now()
+        for index, alert_payload in enumerate(DEFAULT_ALERTS, start=1):
+            fingerprint = f"{schema_name}-demo-{index}"
+            alert, _ = Alert.objects.update_or_create(
+                dedup_fingerprint=fingerprint,
+                defaults={
+                    "title": alert_payload["title"],
+                    "severity": alert_payload["severity"],
+                    "event_timestamp": now - timedelta(hours=index * 2),
+                    "source_name": alert_payload["source_name"],
+                    "source_id": alert_payload["source_id"],
+                    "raw_payload": alert_payload["raw_payload"],
+                    "parsed_payload": alert_payload["parsed_payload"],
+                    "current_state": states_by_name[alert_payload["state"]],
+                },
+            )
+
+            first_seen = alert.event_timestamp
+            last_seen = now - timedelta(minutes=index * 5)
+            AlertOccurrence.objects.update_or_create(
+                alert=alert,
+                defaults={"count": 1 + index, "first_seen": first_seen, "last_seen": last_seen},
+            )
+
+            AlertTag.objects.filter(alert=alert).exclude(tag__name__in=alert_payload["tags"]).delete()
+            for tag_name in alert_payload["tags"]:
+                AlertTag.objects.get_or_create(alert=alert, tag=tags_by_name[tag_name])
+
+            assigned_to = users_map.get(alert_payload["assigned_to"])
+            Assignment.objects.update_or_create(
+                alert=alert,
+                defaults={"assigned_to": assigned_to, "assigned_by": users_map.get("manager") or assigned_to},
+            )
+
+            Comment.objects.get_or_create(
+                alert=alert,
+                body=alert_payload["comment"],
+                defaults={"author": users_map.get("manager") or assigned_to},
+            )
 
     def handle(self, *args, **options):
         User = get_user_model()
@@ -64,7 +202,7 @@ class Command(BaseCommand):
                 defaults={"tenant": tenant, "is_primary": True},
             )
 
-        users = [
+        users_payload = [
             {
                 "username": "admin",
                 "password": "Admin123!",
@@ -89,17 +227,26 @@ class Command(BaseCommand):
                 "is_superuser": False,
                 "is_staff": False,
             },
+            {
+                "username": "readonly",
+                "password": "ReadOnly123!",
+                "email": "readonly@socview.local",
+                "role": User.Role.READ_ONLY,
+                "is_superuser": False,
+                "is_staff": False,
+            },
         ]
 
-        for payload in users:
-            user, _ = User.objects.get_or_create(username=payload["username"], defaults={"email": payload["email"]})
-            user.email = payload["email"]
-            user.role = payload["role"]
-            user.is_superuser = payload["is_superuser"]
-            user.is_staff = payload["is_staff"]
-            user.is_active = True
-            user.set_password(payload["password"])
-            user.save()
-            self.stdout.write(self.style.SUCCESS(f"Utente pronto: {payload['username']} ({payload['role']})"))
+        for schema_name in ["public", "tenant1", "tenant2"]:
+            with schema_context(schema_name):
+                users_map = self._upsert_users(users_payload)
+                for payload in users_payload:
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"Utente pronto ({schema_name}): {payload['username']} ({payload['role']})"
+                        )
+                    )
+                if schema_name != "public":
+                    self._seed_tenant_core_data(schema_name, users_map)
 
         self.stdout.write(self.style.SUCCESS("Seed demo completato"))

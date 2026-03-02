@@ -1,4 +1,177 @@
+from django.conf import settings
 from django.db import models
+
+
+def alert_attachment_upload_path(instance, filename):
+    return f"attachments/alert_{instance.alert_id}/{filename}"
+
+
+class TimeStampedModel(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class AlertState(TimeStampedModel):
+    name = models.CharField(max_length=100, unique=True)
+    order = models.PositiveIntegerField(default=0)
+    is_final = models.BooleanField(default=False)
+    is_enabled = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("order", "id")
+
+    def __str__(self):
+        return f"{self.order} - {self.name}"
+
+
+class Tag(TimeStampedModel):
+    class Scope(models.TextChoices):
+        TENANT = "tenant", "Tenant"
+        SOURCE = "source", "Source"
+        ALERT = "alert", "Alert"
+
+    name = models.CharField(max_length=100)
+    color = models.CharField(max_length=20, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    scope = models.CharField(max_length=20, choices=Scope.choices, default=Scope.ALERT)
+
+    class Meta:
+        ordering = ("name",)
+        unique_together = (("name", "scope"),)
+
+    def __str__(self):
+        return f"{self.name} ({self.scope})"
+
+
+class Alert(TimeStampedModel):
+    class Severity(models.TextChoices):
+        LOW = "low", "Low"
+        MEDIUM = "medium", "Medium"
+        HIGH = "high", "High"
+        CRITICAL = "critical", "Critical"
+
+    title = models.CharField(max_length=255)
+    severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.MEDIUM)
+    event_timestamp = models.DateTimeField()
+    source_name = models.CharField(max_length=120)
+    source_id = models.CharField(max_length=120, blank=True)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    parsed_payload = models.JSONField(default=dict, blank=True)
+    current_state = models.ForeignKey(AlertState, on_delete=models.PROTECT, related_name="alerts")
+    dedup_fingerprint = models.CharField(max_length=255, db_index=True, blank=True)
+
+    class Meta:
+        ordering = ("-event_timestamp", "-id")
+
+    @property
+    def is_active(self):
+        return not self.current_state.is_final
+
+    def __str__(self):
+        return f"{self.title} ({self.severity})"
+
+
+class AlertOccurrence(TimeStampedModel):
+    alert = models.OneToOneField(Alert, on_delete=models.CASCADE, related_name="occurrence")
+    count = models.PositiveIntegerField(default=1)
+    first_seen = models.DateTimeField()
+    last_seen = models.DateTimeField()
+
+    class Meta:
+        ordering = ("-last_seen",)
+
+    def __str__(self):
+        return f"Alert {self.alert_id} x{self.count}"
+
+
+class AlertTag(TimeStampedModel):
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name="alert_tags")
+    tag = models.ForeignKey(Tag, on_delete=models.CASCADE, related_name="tag_alerts")
+
+    class Meta:
+        unique_together = (("alert", "tag"),)
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"{self.alert_id} -> {self.tag_id}"
+
+
+class Assignment(TimeStampedModel):
+    alert = models.OneToOneField(Alert, on_delete=models.CASCADE, related_name="assignment")
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_alerts",
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_alerts_by",
+    )
+
+    class Meta:
+        ordering = ("-updated_at",)
+
+    def __str__(self):
+        return f"Alert {self.alert_id} -> {self.assigned_to_id}"
+
+
+class Comment(TimeStampedModel):
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name="comments")
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="comments")
+    body = models.TextField()
+
+    class Meta:
+        ordering = ("created_at",)
+
+    def __str__(self):
+        return f"Comment {self.id} on alert {self.alert_id}"
+
+
+class Attachment(TimeStampedModel):
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name="attachments")
+    filename = models.CharField(max_length=255)
+    file = models.FileField(upload_to=alert_attachment_upload_path)
+    content_type = models.CharField(max_length=120, blank=True)
+    size = models.PositiveBigIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_attachments",
+    )
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return self.filename
+
+
+class AuditLog(models.Model):
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    action = models.CharField(max_length=100)
+    object_type = models.CharField(max_length=100)
+    object_id = models.CharField(max_length=100)
+    diff = models.JSONField(default=dict, blank=True)
+    alert = models.ForeignKey(Alert, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_logs")
+    timestamp = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ("-timestamp", "-id")
+
+    def __str__(self):
+        return f"{self.action} {self.object_type}:{self.object_id}"
 
 
 class TenantPlaceholder(models.Model):

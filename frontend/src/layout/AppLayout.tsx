@@ -1,6 +1,7 @@
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import DomainIcon from "@mui/icons-material/Domain";
 import LogoutIcon from "@mui/icons-material/Logout";
+import SettingsIcon from "@mui/icons-material/Settings";
 import {
   AppBar,
   Box,
@@ -17,6 +18,7 @@ import { useMemo } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { useAuth } from "../context/AuthContext";
+import { canManageStates, canManageTags } from "../services/roleUtils";
 
 const drawerWidth = 240;
 
@@ -25,13 +27,18 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
 
-  const items = useMemo(
-    () => [
+  const items = useMemo(() => {
+    const baseItems = [
       { label: "Home", icon: <DashboardIcon />, to: "/" },
-      { label: "Tenant", icon: <DomainIcon />, to: "/tenant" },
-    ],
-    [],
-  );
+      { label: "Alert", icon: <DomainIcon />, to: "/tenant" },
+    ];
+
+    if (canManageStates(user?.role) || canManageTags(user?.role)) {
+      baseItems.push({ label: "Admin", icon: <SettingsIcon />, to: "/configurazione" });
+    }
+
+    return baseItems;
+  }, [user?.role]);
 
   const handleLogout = () => {
     logout();
@@ -72,7 +79,7 @@ export default function AppLayout() {
               key={item.to}
               component={Link}
               to={item.to}
-              selected={location.pathname === item.to}
+              selected={location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)}
             >
               <ListItemIcon>{item.icon}</ListItemIcon>
               <ListItemText primary={item.label} />

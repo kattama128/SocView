@@ -25,6 +25,7 @@ else:
 PY
 
 python manage.py migrate_schemas --shared --noinput
+python manage.py migrate_schemas --tenant --noinput
 python manage.py collectstatic --noinput
 
 exec python manage.py runserver 0.0.0.0:8000

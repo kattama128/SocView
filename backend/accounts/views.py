@@ -5,6 +5,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .serializers import CustomTokenObtainPairSerializer, UserSerializer
+from .models import User
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -18,3 +19,12 @@ class CurrentUserView(APIView):
     @extend_schema(responses=UserSerializer, tags=["Auth"])
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+
+class UsersListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(responses=UserSerializer(many=True), tags=["Auth"])
+    def get(self, request):
+        queryset = User.objects.filter(is_active=True).order_by("username")
+        return Response(UserSerializer(queryset, many=True).data)

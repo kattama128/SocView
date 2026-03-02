@@ -1,8 +1,71 @@
 from django.contrib import admin
 
-from .models import TenantPlaceholder
+from .models import (
+    Alert,
+    AlertOccurrence,
+    AlertState,
+    AlertTag,
+    Assignment,
+    Attachment,
+    AuditLog,
+    Comment,
+    Tag,
+    TenantPlaceholder,
+)
 
 
 @admin.register(TenantPlaceholder)
 class TenantPlaceholderAdmin(admin.ModelAdmin):
     list_display = ("id", "label", "created_at")
+
+
+@admin.register(AlertState)
+class AlertStateAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "order", "is_final", "is_enabled")
+    list_editable = ("order", "is_final", "is_enabled")
+
+
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "scope", "color", "updated_at")
+    list_filter = ("scope",)
+    search_fields = ("name",)
+
+
+@admin.register(Alert)
+class AlertAdmin(admin.ModelAdmin):
+    list_display = ("id", "title", "severity", "current_state", "source_name", "event_timestamp")
+    list_filter = ("severity", "current_state")
+    search_fields = ("title", "source_name", "source_id", "dedup_fingerprint")
+
+
+@admin.register(AlertOccurrence)
+class AlertOccurrenceAdmin(admin.ModelAdmin):
+    list_display = ("id", "alert", "count", "first_seen", "last_seen")
+
+
+@admin.register(AlertTag)
+class AlertTagAdmin(admin.ModelAdmin):
+    list_display = ("id", "alert", "tag", "created_at")
+
+
+@admin.register(Assignment)
+class AssignmentAdmin(admin.ModelAdmin):
+    list_display = ("id", "alert", "assigned_to", "assigned_by", "updated_at")
+
+
+@admin.register(Comment)
+class CommentAdmin(admin.ModelAdmin):
+    list_display = ("id", "alert", "author", "created_at")
+    search_fields = ("body",)
+
+
+@admin.register(Attachment)
+class AttachmentAdmin(admin.ModelAdmin):
+    list_display = ("id", "alert", "filename", "uploaded_by", "size", "created_at")
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    list_display = ("id", "timestamp", "actor", "action", "object_type", "object_id")
+    search_fields = ("action", "object_type", "object_id")
