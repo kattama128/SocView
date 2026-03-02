@@ -61,6 +61,8 @@ DashboardTenantSerializer = inline_serializer(
         "name": serializers.CharField(),
         "on_trial": serializers.BooleanField(),
         "active_alerts": serializers.IntegerField(),
+        "domain": serializers.CharField(),
+        "entry_url": serializers.CharField(),
     },
 )
 

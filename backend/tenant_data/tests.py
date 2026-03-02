@@ -672,6 +672,8 @@ class SmokeApiTests(BaseTenantTestCase):
         self.assertEqual(tenants.status_code, 200)
         self.assertGreaterEqual(len(tenants.data), 1)
         self.assertEqual(tenants.data[0]["schema_name"], self.tenant.schema_name)
+        self.assertEqual(tenants.data[0]["domain"], "test.localhost")
+        self.assertTrue(tenants.data[0]["entry_url"].endswith("/tenant"))
 
         reorder = self.client.post(
             "/api/core/dashboard/tenants/reorder/",
@@ -707,3 +709,41 @@ class SmokeApiTests(BaseTenantTestCase):
         body = export.content.decode("utf-8")
         self.assertIn("id,title,severity,dyn:event.id", body)
         self.assertIn("Alert smoke critico", body)
+
+    def test_tenant_endpoints_blocked_on_public_schema(self):
+        notifications = self.client.get("/api/alerts/notifications/", HTTP_HOST="localhost")
+        search = self.client.post(
+            "/api/alerts/search/",
+            data={"text": "smoke", "page": 1, "page_size": 10},
+            format="json",
+            HTTP_HOST="localhost",
+        )
+        self.assertEqual(notifications.status_code, 403)
+        self.assertEqual(search.status_code, 403)
+
+
+class PublicDashboardApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="public-dashboard-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+
+    def test_public_dashboard_lists_tenant_entries(self):
+        tenants = self.client.get("/api/core/dashboard/tenants/", HTTP_HOST="localhost")
+        self.assertEqual(tenants.status_code, 200)
+        self.assertGreaterEqual(len(tenants.data), 1)
+        self.assertEqual(tenants.data[0]["schema_name"], self.tenant.schema_name)
+        self.assertEqual(tenants.data[0]["domain"], "test.localhost")
+
+        reorder = self.client.post(
+            "/api/core/dashboard/tenants/reorder/",
+            data={"schema_order": [self.tenant.schema_name]},
+            format="json",
+            HTTP_HOST="localhost",
+        )
+        self.assertEqual(reorder.status_code, 200)
+        self.assertEqual(reorder.data["schema_order"], [self.tenant.schema_name])

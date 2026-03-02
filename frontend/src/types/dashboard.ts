@@ -30,4 +30,6 @@ export type DashboardTenantSummary = {
   name: string;
   on_trial: boolean;
   active_alerts: number;
+  domain: string;
+  entry_url: string;
 };

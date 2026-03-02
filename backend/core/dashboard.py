@@ -170,14 +170,12 @@ def _active_alerts_for_schema(schema_name):
 
 
 def get_tenant_summaries_for_user(user, request_tenant=None):
-    if user.is_superuser or user.role == user.Role.SUPER_ADMIN:
-        tenant_queryset = Client.objects.exclude(schema_name="public").order_by("schema_name")
+    schema_name = getattr(request_tenant, "schema_name", None)
+    if schema_name and schema_name != "public":
+        tenant_queryset = Client.objects.filter(schema_name=schema_name)
     else:
-        schema_name = getattr(request_tenant, "schema_name", None)
-        if schema_name and schema_name != "public":
-            tenant_queryset = Client.objects.filter(schema_name=schema_name)
-        else:
-            tenant_queryset = Client.objects.exclude(schema_name="public").order_by("schema_name")[:1]
+        tenant_queryset = Client.objects.exclude(schema_name="public").order_by("schema_name")
+    tenant_queryset = tenant_queryset.prefetch_related("domains")
 
     preference = get_dashboard_preference(user)
     ordering = preference.tenant_order or []
@@ -185,6 +183,10 @@ def get_tenant_summaries_for_user(user, request_tenant=None):
 
     tenants = []
     for tenant in tenant_queryset:
+        domains = list(tenant.domains.all())
+        primary_domain = next((item.domain for item in domains if item.is_primary), None)
+        domain = primary_domain or (domains[0].domain if domains else f"{tenant.schema_name}.localhost")
+
         try:
             active_alerts = _active_alerts_for_schema(tenant.schema_name)
         except (ProgrammingError, OperationalError):
@@ -195,6 +197,8 @@ def get_tenant_summaries_for_user(user, request_tenant=None):
                 "name": tenant.name,
                 "on_trial": tenant.on_trial,
                 "active_alerts": active_alerts,
+                "domain": domain,
+                "entry_url": f"http://{domain}/tenant",
             }
         )
 
@@ -204,11 +208,11 @@ def get_tenant_summaries_for_user(user, request_tenant=None):
 
 def update_tenant_order_for_user(user, schema_order, request_tenant=None):
     preference = get_dashboard_preference(user)
-    if user.is_superuser or user.role == user.Role.SUPER_ADMIN:
-        allowed = set(Client.objects.exclude(schema_name="public").values_list("schema_name", flat=True))
+    current_schema = getattr(request_tenant, "schema_name", None)
+    if current_schema and current_schema != "public":
+        allowed = {current_schema}
     else:
-        current_schema = getattr(request_tenant, "schema_name", None)
-        allowed = {current_schema} if current_schema and current_schema != "public" else set()
+        allowed = set(Client.objects.exclude(schema_name="public").values_list("schema_name", flat=True))
     clean_order = [schema for schema in schema_order if schema in allowed]
     preference.tenant_order = clean_order
     preference.save(update_fields=["tenant_order", "updated_at"])

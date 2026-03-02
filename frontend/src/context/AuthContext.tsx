@@ -25,6 +25,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const bootstrap = async () => {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const sharedAccess = hashParams.get("sv_access");
+      const sharedRefresh = hashParams.get("sv_refresh");
+      if (sharedAccess) {
+        localStorage.setItem("socview_access_token", sharedAccess);
+        hashParams.delete("sv_access");
+      }
+      if (sharedRefresh) {
+        localStorage.setItem("socview_refresh_token", sharedRefresh);
+        hashParams.delete("sv_refresh");
+      }
+      if (sharedAccess || sharedRefresh) {
+        const cleanHash = hashParams.toString();
+        const cleanUrl = `${window.location.pathname}${window.location.search}${cleanHash ? `#${cleanHash}` : ""}`;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+
       const token = localStorage.getItem("socview_access_token");
       if (!token) {
         setLoading(false);

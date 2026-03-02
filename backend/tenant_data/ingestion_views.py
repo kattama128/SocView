@@ -14,14 +14,14 @@ from tenant_data.audit import create_audit_log
 from tenant_data.ingestion.service import run_ingestion_for_source, test_source_connection
 from tenant_data.ingestion_serializers import IngestionRunSerializer, SourceSerializer
 from tenant_data.models import IngestionRun, Source, SourceConfig
-from tenant_data.permissions import RoleBasedWritePermission
+from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
 from tenant_data.tasks import ingest_source_task
 
 
 class SourceViewSet(viewsets.ModelViewSet):
     queryset = Source.objects.select_related("config", "dedup_policy", "parser_definition").all()
     serializer_class = SourceSerializer
-    permission_classes = [RoleBasedWritePermission]
+    permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER)
 
     def get_serializer_context(self):
@@ -117,7 +117,7 @@ class SourceViewSet(viewsets.ModelViewSet):
 class IngestionRunViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = IngestionRun.objects.select_related("source").prefetch_related("events").all()
     serializer_class = IngestionRunSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -139,7 +139,7 @@ class IngestionRunViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class WebhookIngestionView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [TenantSchemaAccessPermission]
     throttle_classes = [WebhookRateThrottle]
 
     def _check_rate_limit(self, source_id, config):
@@ -200,7 +200,7 @@ class WebhookIngestionView(APIView):
 
 
 class MockRestEventsView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [TenantSchemaAccessPermission]
 
     @extend_schema(
         responses=inline_serializer(

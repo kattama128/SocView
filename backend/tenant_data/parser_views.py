@@ -8,7 +8,7 @@ from tenant_data.audit import create_audit_log
 from tenant_data.ingestion.parser import ParserValidationError, parse_event, parse_parser_config_text
 from tenant_data.models import ParserDefinition, ParserRevision
 from tenant_data.parser_serializers import ParserDefinitionSerializer
-from tenant_data.permissions import RoleBasedWritePermission
+from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
 
 
 class ParserDefinitionViewSet(viewsets.ModelViewSet):
@@ -18,7 +18,7 @@ class ParserDefinitionViewSet(viewsets.ModelViewSet):
         "revisions__rollback_from",
     )
     serializer_class = ParserDefinitionSerializer
-    permission_classes = [RoleBasedWritePermission]
+    permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER)
 
     def get_queryset(self):

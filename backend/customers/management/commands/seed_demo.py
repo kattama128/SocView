@@ -28,7 +28,7 @@ DEFAULT_ALERTS = [
     {
         "title": "Tentativi login anomali su VPN",
         "severity": "high",
-        "source_name": "vpn-gateway",
+        "source_name": "REST Demo Feed",
         "source_id": "vpn-001",
         "raw_payload": {"failed_logins": 45, "ip": "203.0.113.10"},
         "parsed_payload": {"country": "IT", "username": "ops.user"},
@@ -40,7 +40,7 @@ DEFAULT_ALERTS = [
     {
         "title": "Possibile malware rilevato endpoint",
         "severity": "critical",
-        "source_name": "edr",
+        "source_name": "SIEM Correlation Feed",
         "source_id": "edr-992",
         "raw_payload": {"hash": "abc123", "host": "ws-finance-07"},
         "parsed_payload": {"family": "emotet", "score": 95},
@@ -52,7 +52,7 @@ DEFAULT_ALERTS = [
     {
         "title": "Segnalazione phishing da mailbox SOC",
         "severity": "medium",
-        "source_name": "mail-sec",
+        "source_name": "IMAP Demo Inbox",
         "source_id": "mail-442",
         "raw_payload": {"sender": "billing@example.net", "attachments": 1},
         "parsed_payload": {"url_reputation": "suspicious"},
@@ -60,6 +60,78 @@ DEFAULT_ALERTS = [
         "tags": ["phishing"],
         "assigned_to": "analyst",
         "comment": "Campagna bloccata e IOC aggiunti in deny-list.",
+    },
+    {
+        "title": "Webhook brute force rilevato su SSH bastion",
+        "severity": "critical",
+        "source_name": "Webhook Demo",
+        "source_id": "wh-ssh-2201",
+        "raw_payload": {"host": "bastion-01", "attempts": 83, "ip": "198.51.100.71"},
+        "parsed_payload": {"service": "ssh", "classification": "bruteforce"},
+        "state": "Nuovo",
+        "tags": ["network", "critical"],
+        "assigned_to": "manager",
+        "comment": "Applicare ban IP e verificare eventuali login riusciti.",
+    },
+    {
+        "title": "Anomalia traffico egress su subnet finance",
+        "severity": "high",
+        "source_name": "Cloud API Pull",
+        "source_id": "cloud-egress-77",
+        "raw_payload": {"subnet": "10.30.10.0/24", "bytes_out": 93422011},
+        "parsed_payload": {"baseline_delta": 2.9, "region": "eu-west-1"},
+        "state": "In lavorazione",
+        "tags": ["network"],
+        "assigned_to": "analyst",
+        "comment": "Correlare con change ticket e audit IAM.",
+    },
+    {
+        "title": "Email con allegato macro sospetto",
+        "severity": "high",
+        "source_name": "Endpoint Mailbox IMAP",
+        "source_id": "imap-endpoint-31",
+        "raw_payload": {"sender": "unknown@external.tld", "attachment": "invoice.xlsm"},
+        "parsed_payload": {"sandbox_score": 88, "macro": True},
+        "state": "Nuovo",
+        "tags": ["phishing", "malware"],
+        "assigned_to": "analyst",
+        "comment": "Mettere in quarantena e notificare team IT.",
+    },
+    {
+        "title": "Nuovo utente admin creato fuori finestra change",
+        "severity": "medium",
+        "source_name": "SIEM Correlation Feed",
+        "source_id": "siem-iam-103",
+        "raw_payload": {"actor": "svc-automation", "target": "admin-temp"},
+        "parsed_payload": {"control": "iam_admin_creation", "confidence": 0.74},
+        "state": "Falso positivo",
+        "tags": ["network"],
+        "assigned_to": "readonly",
+        "comment": "Evento legato a maintenance autorizzata.",
+    },
+    {
+        "title": "Processo powershell encoded command su endpoint",
+        "severity": "critical",
+        "source_name": "REST Demo Feed",
+        "source_id": "edr-ps-902",
+        "raw_payload": {"host": "ws-hr-04", "command": "powershell -enc ..."},
+        "parsed_payload": {"mitre": ["T1059.001"], "risk": 97},
+        "state": "In lavorazione",
+        "tags": ["malware", "critical"],
+        "assigned_to": "manager",
+        "comment": "Isolare endpoint e acquisire memoria volatile.",
+    },
+    {
+        "title": "Tentativi autenticazione API falliti su tenant portal",
+        "severity": "low",
+        "source_name": "Cloud API Pull",
+        "source_id": "api-auth-10",
+        "raw_payload": {"client_id": "portal-mobile", "failures": 12},
+        "parsed_payload": {"threshold": 20, "status": "under_threshold"},
+        "state": "Risolto",
+        "tags": ["network"],
+        "assigned_to": "readonly",
+        "comment": "Monitoraggio completato, nessuna escalation necessaria.",
     },
 ]
 
@@ -124,6 +196,88 @@ DEFAULT_SOURCES = [
             },
         },
         "dedup": {"fingerprint_fields": ["event_id"], "strategy": "increment_occurrence"},
+    },
+    {
+        "name": "SIEM Correlation Feed",
+        "type": "rest",
+        "is_enabled": True,
+        "severity_map": {
+            "field": "severity",
+            "default": "medium",
+            "map": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"},
+        },
+        "config": {
+            "poll_interval_seconds": 120,
+            "rate_limit_per_minute": 90,
+            "config_json": {
+                "url": "http://backend:8000/api/ingestion/mock/rest-events/",
+                "method": "GET",
+                "headers": {"x-source": "siem-correlation"},
+                "pagination": {"type": "none"},
+            },
+        },
+        "dedup": {"fingerprint_fields": ["event_id", "title"], "strategy": "increment_occurrence"},
+    },
+    {
+        "name": "Cloud API Pull",
+        "type": "rest",
+        "is_enabled": True,
+        "severity_map": {
+            "field": "severity",
+            "default": "medium",
+            "map": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"},
+        },
+        "config": {
+            "poll_interval_seconds": 150,
+            "rate_limit_per_minute": 80,
+            "config_json": {
+                "url": "http://backend:8000/api/ingestion/mock/rest-events/",
+                "method": "GET",
+                "headers": {"x-source": "cloud-api"},
+                "pagination": {"type": "none"},
+            },
+        },
+        "dedup": {"fingerprint_fields": ["event_id"], "strategy": "increment_occurrence"},
+    },
+    {
+        "name": "Endpoint Mailbox IMAP",
+        "type": "imap",
+        "is_enabled": True,
+        "severity_map": {
+            "field": "severity",
+            "default": "medium",
+            "map": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"},
+        },
+        "config": {
+            "poll_interval_seconds": 180,
+            "rate_limit_per_minute": 40,
+            "config_json": {
+                "use_mock": True,
+                "mock_messages": [
+                    {
+                        "event_id": "imap-endpoint-1",
+                        "subject": "Endpoint suspicious attachment",
+                        "from": "alerts@endpoint.local",
+                        "date": "2026-01-10T11:30:00Z",
+                        "severity": "high",
+                        "body": "Attachment flagged by endpoint sensor",
+                        "headers": {"x-priority": "2"},
+                        "attachments": [{"filename": "payload.docm", "content_type": "application/msword"}],
+                    },
+                    {
+                        "event_id": "imap-endpoint-2",
+                        "subject": "Endpoint privilege escalation",
+                        "from": "alerts@endpoint.local",
+                        "date": "2026-01-10T11:45:00Z",
+                        "severity": "critical",
+                        "body": "Potential local admin abuse detected",
+                        "headers": {"x-priority": "1"},
+                        "attachments": [],
+                    },
+                ],
+            },
+        },
+        "dedup": {"fingerprint_fields": ["event_id", "subject"], "strategy": "increment_occurrence"},
     },
     {
         "name": "Webhook Demo",
@@ -260,7 +414,7 @@ class Command(BaseCommand):
             {"key": "top_sources", "enabled": True, "order": 1},
             {"key": "state_distribution", "enabled": True, "order": 2},
         ]
-        default_order = ["tenant1", "tenant2"]
+        default_order = ["tenant1", "tenant2", "tenant3", "tenant4", "tenant5"]
 
         for username in ["admin", "manager", "analyst", "readonly"]:
             user = users_map.get(username)
@@ -494,6 +648,9 @@ class Command(BaseCommand):
         demo_tenants = [
             {"schema_name": "tenant1", "name": "Tenant Demo 1", "domain": "tenant1.localhost"},
             {"schema_name": "tenant2", "name": "Tenant Demo 2", "domain": "tenant2.localhost"},
+            {"schema_name": "tenant3", "name": "Tenant Demo 3", "domain": "tenant3.localhost"},
+            {"schema_name": "tenant4", "name": "Tenant Demo 4", "domain": "tenant4.localhost"},
+            {"schema_name": "tenant5", "name": "Tenant Demo 5", "domain": "tenant5.localhost"},
         ]
 
         for cfg in demo_tenants:
@@ -554,7 +711,8 @@ class Command(BaseCommand):
             },
         ]
 
-        for schema_name in ["public", "tenant1", "tenant2"]:
+        tenant_schema_names = [item["schema_name"] for item in demo_tenants]
+        for schema_name in ["public", *tenant_schema_names]:
             with schema_context(schema_name):
                 users_map = self._upsert_users(users_payload)
                 if schema_name == "public":

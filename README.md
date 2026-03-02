@@ -37,10 +37,16 @@ docker compose --profile elastic up -d --build
 
 - UI HTTP: [http://localhost](http://localhost)
 - UI HTTPS (self-signed): [https://localhost](https://localhost)
-- Tenant demo: [http://tenant1.localhost](http://tenant1.localhost), [http://tenant2.localhost](http://tenant2.localhost)
+- Tenant demo: [http://tenant1.localhost](http://tenant1.localhost), [http://tenant2.localhost](http://tenant2.localhost), [http://tenant3.localhost](http://tenant3.localhost)
 - Swagger: [http://localhost/api/docs/](http://localhost/api/docs/)
 - Health: [http://localhost/healthz](http://localhost/healthz)
 - Ready: [http://localhost/readyz](http://localhost/readyz)
+
+Nota importante:
+- `localhost` e `https://localhost` sono dominio `public`.
+- Le funzioni SOC tenant (`/api/alerts/*`, `/api/ingestion/*`, notifiche) sono disponibili solo su domini tenant (`tenant1.localhost`, `tenant2.localhost`, `tenant3.localhost`).
+- Dalla dashboard Home su `public` trovi tutti i tenant con pulsante `Apri`: il passaggio al dominio tenant mantiene automaticamente la sessione utente.
+- In sviluppo il pulsante `Apri` usa `http://tenantX.localhost` per evitare problemi di certificato self-signed sui subdomini tenant.
 
 ## Migrazioni
 
@@ -64,7 +70,7 @@ docker compose exec backend python manage.py seed_demo
 
 Il seed crea/aggiorna:
 
-- tenant demo `tenant1`, `tenant2`
+- tenant demo `tenant1`, `tenant2`, `tenant3`
 - utenti demo (`admin`, `manager`, `analyst`, `readonly`)
 - dashboard preference per utente (layout widget + tenant ordering)
 - stati/tag/alert demo
@@ -155,7 +161,8 @@ Config da `.env`:
 - `SECURE_REFERRER_POLICY`
 - `X_FRAME_OPTIONS`
 
-Header di sicurezza base applicati in Nginx (`nosniff`, `x-frame-options`, `referrer-policy`, `xss-protection`, HSTS su HTTPS).
+Header di sicurezza base applicati in Nginx (`nosniff`, `x-frame-options`, `referrer-policy`, `xss-protection`).  
+Nota dev: HSTS non e forzato per evitare blocchi dei subdomini tenant con cert self-signed.
 
 ### Upload e scanning placeholder
 

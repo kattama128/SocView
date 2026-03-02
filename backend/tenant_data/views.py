@@ -30,7 +30,7 @@ from tenant_data.models import (
     SavedSearch,
     Tag,
 )
-from tenant_data.permissions import RoleBasedWritePermission
+from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
 from tenant_data.search import SearchRequest, build_all_source_field_schemas, build_source_field_schema, search_alerts
 from tenant_data.search.backends import extract_path
 from tenant_data.security import scan_attachment_placeholder
@@ -61,7 +61,7 @@ User = get_user_model()
 class AlertStateViewSet(viewsets.ModelViewSet):
     queryset = AlertState.objects.all().order_by("order", "id")
     serializer_class = AlertStateSerializer
-    permission_classes = [RoleBasedWritePermission]
+    permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER)
 
     def perform_create(self, serializer):
@@ -142,7 +142,7 @@ class AlertStateViewSet(viewsets.ModelViewSet):
 class TagViewSet(viewsets.ModelViewSet):
     queryset = Tag.objects.all().order_by("name")
     serializer_class = TagSerializer
-    permission_classes = [RoleBasedWritePermission]
+    permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER, User.Role.SOC_ANALYST)
 
     def perform_create(self, serializer):
@@ -189,7 +189,7 @@ class AlertViewSet(viewsets.ModelViewSet):
         .prefetch_related("alert_tags__tag", "comments__author", "attachments", "audit_logs", "assignment")
         .all()
     )
-    permission_classes = [RoleBasedWritePermission]
+    permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER, User.Role.SOC_ANALYST)
 
     def get_serializer_class(self):
@@ -655,7 +655,7 @@ class AlertViewSet(viewsets.ModelViewSet):
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.select_related("actor").all()
     serializer_class = AuditLogSerializer
-    permission_classes = [RoleBasedWritePermission]
+    permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -698,7 +698,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
 class SavedSearchViewSet(viewsets.ModelViewSet):
     serializer_class = SavedSearchSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     def get_queryset(self):
         return SavedSearch.objects.filter(user=self.request.user).order_by("name", "id")
@@ -735,7 +735,7 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationEventSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     def get_queryset(self):
         queryset = NotificationEvent.objects.select_related("alert").filter(is_active=True)
@@ -789,7 +789,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class AlertSearchView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     @extend_schema(
         request=AlertSearchRequestSerializer,
@@ -845,7 +845,7 @@ class AlertSearchView(APIView):
 
 
 class SourceFieldSchemaView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     @extend_schema(
         responses=inline_serializer(
