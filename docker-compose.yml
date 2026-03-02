@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: socview-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: socview-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: socview-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - media_data:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build:
+      context: ./backend
+    container_name: socview-celery-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["celery", "-A", "socview", "worker", "-l", "INFO"]
+    depends_on:
+      - backend
+      - redis
+      - postgres
+
+  celery_beat:
+    build:
+      context: ./backend
+    container_name: socview-celery-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["celery", "-A", "socview", "beat", "-l", "INFO"]
+    depends_on:
+      - backend
+      - redis
+      - postgres
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: socview-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: socview-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - media_data:/var/www/media:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  db_data:
+  redis_data:
+  media_data:
