@@ -1,6 +1,7 @@
 import FilterAltIcon from "@mui/icons-material/FilterAlt";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
+import SettingsIcon from "@mui/icons-material/Settings";
 import TuneIcon from "@mui/icons-material/Tune";
 import {
   Box,
@@ -23,7 +24,8 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { useCustomer } from "../context/CustomerContext";
 import { MockAlarm, mockAlarms, mockCustomers, mockSources } from "../mocks/activeAlarmsData";
@@ -50,8 +52,7 @@ const tableColumns: Array<{ key: AlarmColumnKey; label: string; minWidth?: numbe
   { key: "event", label: "Event ID", minWidth: 170 },
 ];
 
-const detailConfigStorageKey = "socview_active_alarms_detail_config";
-
+const detailConfigStorageKey = "socview_costumer_alarms_detail_config";
 type DetailConfigMap = Record<string, string[]>;
 
 function severityTone(severity: MockAlarm["severity"]) {
@@ -92,31 +93,34 @@ function toggleSelection(values: string[], value: string): string[] {
 }
 
 function sortableValue(row: AlarmRow, key: AlarmColumnKey): string | number {
-  if (key === "timestamp") {
-    return row.timestampRaw;
-  }
-  if (key === "severity") {
-    return row.severity;
-  }
-  if (key === "title") {
-    return row.title;
-  }
-  if (key === "source") {
-    return row.sourceName;
-  }
-  if (key === "tenant") {
-    return row.tenantName;
-  }
-  if (key === "status") {
-    return row.status;
-  }
+  if (key === "timestamp") return row.timestampRaw;
+  if (key === "severity") return row.severity;
+  if (key === "title") return row.title;
+  if (key === "source") return row.sourceName;
+  if (key === "tenant") return row.tenantName;
+  if (key === "status") return row.status;
   return row.eventId;
 }
 
-export default function ActiveAlarmsPage() {
-  const { selectedCustomer, selectedCustomerId } = useCustomer();
+export default function CustomerAlarmsPage() {
+  const navigate = useNavigate();
+  const { setSelectedCustomerId } = useCustomer();
   const globalSources = useMemo(() => loadGlobalSourcesConfig(), []);
   const sourcePreferences = useMemo(() => loadCustomerSourcePreferences(), []);
+  const params = useParams<{ customerId: string }>();
+  const customerId = Number(params.customerId ?? 0);
+
+  const customer = useMemo(
+    () => mockCustomers.find((item) => item.id === customerId) ?? null,
+    [customerId],
+  );
+
+  useEffect(() => {
+    if (customerId) {
+      setSelectedCustomerId(customerId);
+    }
+  }, [customerId, setSelectedCustomerId]);
+
   const [searchText, setSearchText] = useState("");
   const [sortBy, setSortBy] = useState<AlarmColumnKey>("timestamp");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
@@ -126,7 +130,6 @@ export default function ActiveAlarmsPage() {
 
   const [severityFilters, setSeverityFilters] = useState<string[]>([]);
   const [sourceFilters, setSourceFilters] = useState<string[]>([]);
-  const [tenantFilters, setTenantFilters] = useState<string[]>([]);
   const [statusFilters, setStatusFilters] = useState<string[]>([]);
   const [typeFilters, setTypeFilters] = useState<string[]>([]);
   const [descriptionFilter, setDescriptionFilter] = useState("");
@@ -137,64 +140,55 @@ export default function ActiveAlarmsPage() {
   const [detailConfigMap, setDetailConfigMap] = useState<DetailConfigMap>(loadDetailConfig);
 
   const rows = useMemo<AlarmRow[]>(() => {
-    const baseAlarms = selectedCustomerId
-      ? mockAlarms.filter((alarm) => alarm.customerId === selectedCustomerId)
-      : mockAlarms;
-
-    return baseAlarms
-      .filter((alarm) => isSourceEnabledForCustomer(alarm.customerId, alarm.sourceId, sourcePreferences))
+    return mockAlarms
+      .filter((alarm) => alarm.customerId === customerId)
+      .filter((alarm) => isSourceEnabledForCustomer(customerId, alarm.sourceId, sourcePreferences))
       .map((alarm, index) => {
-      const source = mockSources.find((item) => item.id === alarm.sourceId);
-      const customer = mockCustomers.find((item) => item.id === alarm.customerId);
-      const normalizedSeverity = resolveAlarmSeverity(alarm.sourceId, alarm.title, alarm.severity, globalSources);
-      const parsedFields: Record<string, unknown> = {
-        event_id: alarm.eventId,
-        source_type: source?.type ?? null,
-        source_status: source?.status ?? null,
-        customer_code: customer?.code ?? null,
-        customer_sector: customer?.sector ?? null,
-        assignee: alarm.assignee,
-        workflow_status: alarm.status,
-        severity_raw: alarm.severity,
-        severity_effective: normalizedSeverity,
-        rule_name: alarm.title,
-        ingest_lag_seconds: 12 + (index % 9) * 7,
-        confidence: 45 + (index % 11) * 5,
-      };
-      const searchBlob = [
-        alarm.title,
-        alarm.eventId,
-        source?.name,
-        customer?.name,
-        alarm.status,
-        normalizedSeverity,
-        ...Object.values(parsedFields).map((value) => String(value)),
-      ]
-        .join(" ")
-        .toLowerCase();
+        const source = mockSources.find((item) => item.id === alarm.sourceId);
+        const customerName = customer?.name ?? `Costumer ${alarm.customerId}`;
+        const normalizedSeverity = resolveAlarmSeverity(alarm.sourceId, alarm.title, alarm.severity, globalSources);
+        const parsedFields: Record<string, unknown> = {
+          event_id: alarm.eventId,
+          source_type: source?.type ?? null,
+          source_status: source?.status ?? null,
+          customer_code: customer?.code ?? null,
+          customer_sector: customer?.sector ?? null,
+          assignee: alarm.assignee,
+          workflow_status: alarm.status,
+          severity_raw: alarm.severity,
+          severity_effective: normalizedSeverity,
+          rule_name: alarm.title,
+          ingest_lag_seconds: 12 + (index % 9) * 7,
+          confidence: 45 + (index % 11) * 5,
+        };
 
-      return {
-        ...alarm,
-        severity: normalizedSeverity,
-        sourceName: source?.name ?? `Source ${alarm.sourceId}`,
-        tenantName: customer?.name ?? `Cliente ${alarm.customerId}`,
-        parsedFields,
-        searchBlob,
-        timestampRaw: new Date(alarm.detectedAt).getTime(),
-      };
-    });
-  }, [selectedCustomerId, sourcePreferences, globalSources]);
+        const searchBlob = [
+          alarm.title,
+          alarm.eventId,
+          source?.name,
+          customerName,
+          alarm.status,
+          normalizedSeverity,
+          ...Object.values(parsedFields).map((value) => String(value)),
+        ]
+          .join(" ")
+          .toLowerCase();
 
-  const severityOptions = useMemo(
-    () => Array.from(new Set(rows.map((row) => row.severity))),
-    [rows],
-  );
+        return {
+          ...alarm,
+          severity: normalizedSeverity,
+          sourceName: source?.name ?? `Source ${alarm.sourceId}`,
+          tenantName: customerName,
+          parsedFields,
+          searchBlob,
+          timestampRaw: new Date(alarm.detectedAt).getTime(),
+        };
+      });
+  }, [customerId, customer, sourcePreferences, globalSources]);
+
+  const severityOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.severity))), [rows]);
   const sourceOptions = useMemo(
     () => Array.from(new Set(rows.map((row) => row.sourceName))).sort((a, b) => a.localeCompare(b, "it", { sensitivity: "base" })),
-    [rows],
-  );
-  const tenantOptions = useMemo(
-    () => Array.from(new Set(rows.map((row) => row.tenantName))).sort((a, b) => a.localeCompare(b, "it", { sensitivity: "base" })),
     [rows],
   );
   const statusOptions = useMemo(
@@ -216,8 +210,8 @@ export default function ActiveAlarmsPage() {
     [rows],
   );
 
-  const [cfgSourceId, setCfgSourceId] = useState<number>(sourceTypePairs[0]?.sourceId ?? mockSources[0]?.id ?? 0);
-  const [cfgType, setCfgType] = useState<string>(sourceTypePairs[0]?.type ?? mockAlarms[0]?.title ?? "");
+  const [cfgSourceId, setCfgSourceId] = useState<number>(sourceTypePairs[0]?.sourceId ?? 0);
+  const [cfgType, setCfgType] = useState<string>(sourceTypePairs[0]?.type ?? "");
 
   const availableDetailFields = useMemo(() => {
     const keys = new Set<string>();
@@ -236,16 +230,11 @@ export default function ActiveAlarmsPage() {
     const fromMs = timestampFrom ? new Date(timestampFrom).getTime() : null;
     const toMs = timestampTo ? new Date(timestampTo).getTime() : null;
     const descNeedle = descriptionFilter.trim().toLowerCase();
-    const tokens = searchText
-      .toLowerCase()
-      .split(" ")
-      .map((token) => token.trim())
-      .filter(Boolean);
+    const tokens = searchText.toLowerCase().split(" ").map((token) => token.trim()).filter(Boolean);
 
     const filtered = rows.filter((row) => {
       if (severityFilters.length && !severityFilters.includes(row.severity)) return false;
       if (sourceFilters.length && !sourceFilters.includes(row.sourceName)) return false;
-      if (tenantFilters.length && !tenantFilters.includes(row.tenantName)) return false;
       if (statusFilters.length && !statusFilters.includes(row.status)) return false;
       if (typeFilters.length && !typeFilters.includes(row.title)) return false;
       if (descNeedle && !row.title.toLowerCase().includes(descNeedle)) return false;
@@ -265,12 +254,11 @@ export default function ActiveAlarmsPage() {
         ? String(av).localeCompare(String(bv), "it", { sensitivity: "base" })
         : String(bv).localeCompare(String(av), "it", { sensitivity: "base" });
     });
-  }, [rows, severityFilters, sourceFilters, tenantFilters, statusFilters, typeFilters, descriptionFilter, timestampFrom, timestampTo, searchText, sortBy, sortDir]);
+  }, [rows, severityFilters, sourceFilters, statusFilters, typeFilters, descriptionFilter, timestampFrom, timestampTo, searchText, sortBy, sortDir]);
 
   const clearFilters = () => {
     setSeverityFilters([]);
     setSourceFilters([]);
-    setTenantFilters([]);
     setStatusFilters([]);
     setTypeFilters([]);
     setDescriptionFilter("");
@@ -299,12 +287,20 @@ export default function ActiveAlarmsPage() {
     localStorage.setItem(detailConfigStorageKey, JSON.stringify(updatedMap));
   };
 
+  if (!customer) {
+    return (
+      <Paper sx={{ p: 2, borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "rgba(15,23,42,0.9)" }}>
+        <Typography sx={{ color: "#fca5a5" }}>Cliente non trovato.</Typography>
+      </Paper>
+    );
+  }
+
   return (
     <Stack spacing={2}>
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} spacing={1.2}>
         <Box>
-          <Typography sx={{ color: "#f8fafc", fontSize: { xs: 26, md: 34 }, fontWeight: 700 }}>Active Alarms</Typography>
-          <Typography sx={{ color: "#64748b" }}>Pagina singola allarmi con filtri, ordinamento, ricerca e dettagli espandibili.</Typography>
+          <Typography sx={{ color: "#f8fafc", fontSize: { xs: 26, md: 34 }, fontWeight: 700 }}>{customer.name}</Typography>
+          <Typography sx={{ color: "#64748b" }}>Allarmi del cliente in tabella (filtri, ordinamento, ricerca, espansione).</Typography>
         </Box>
         <Stack direction="row" spacing={1}>
           <Button variant="outlined" startIcon={<FilterAltIcon />} sx={{ borderColor: "rgba(71,85,105,0.55)", color: "#cbd5e1" }} onClick={(event) => setFiltersAnchor(event.currentTarget)}>
@@ -313,25 +309,18 @@ export default function ActiveAlarmsPage() {
           <Button variant="outlined" startIcon={<TuneIcon />} sx={{ borderColor: "rgba(71,85,105,0.55)", color: "#cbd5e1" }} onClick={(event) => setDetailCfgAnchor(event.currentTarget)}>
             Configura dettagli
           </Button>
+          <Button variant="contained" startIcon={<SettingsIcon />} sx={{ background: "linear-gradient(180deg,#3b82f6,#1d4ed8)" }} onClick={() => navigate(`/configurazione?customerId=${customer.id}&customer=${encodeURIComponent(customer.name)}`)}>
+            Impostazioni
+          </Button>
         </Stack>
       </Stack>
 
-      <Stack direction={{ xs: "column", md: "row" }} spacing={1.2}>
-        <Chip label={`Allarmi: ${filteredSortedRows.length}/${rows.length}`} sx={{ color: "#fca5a5", border: "1px solid rgba(248,113,113,0.4)", background: "rgba(127,29,29,0.2)" }} />
-        <Chip label={`Fonti: ${sourceOptions.length}`} sx={{ color: "#86efac", border: "1px solid rgba(74,222,128,0.35)", background: "rgba(20,83,45,0.2)" }} />
-        <Chip label={`Clienti: ${tenantOptions.length}`} sx={{ color: "#93c5fd", border: "1px solid rgba(59,130,246,0.35)", background: "rgba(30,64,175,0.2)" }} />
-        <Chip label={selectedCustomer ? `Contesto: ${selectedCustomer.name}` : "Contesto: tutti i clienti"} sx={{ color: "#c4b5fd", border: "1px solid rgba(167,139,250,0.4)", background: "rgba(67,56,202,0.2)" }} />
-      </Stack>
-
       <TextField
-        placeholder="Ricerca full-text (elastic-like): titolo, event id, fonte, cliente, campi parsati..."
+        placeholder="Ricerca full-text (elastic-like) negli allarmi del cliente..."
         value={searchText}
         onChange={(event) => setSearchText(event.target.value)}
         fullWidth
-        sx={{
-          input: { color: "#e2e8f0" },
-          "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" },
-        }}
+        sx={{ input: { color: "#e2e8f0" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }}
       />
 
       <Popover
@@ -344,7 +333,7 @@ export default function ActiveAlarmsPage() {
       >
         <Stack spacing={1.5}>
           <Stack direction="row" justifyContent="space-between" alignItems="center">
-            <Typography sx={{ fontWeight: 700, fontSize: 16 }}>Filtri Active Alarms</Typography>
+            <Typography sx={{ fontWeight: 700, fontSize: 16 }}>Filtri allarmi cliente</Typography>
             <Button size="small" onClick={clearFilters} sx={{ color: "#93c5fd" }}>Reset</Button>
           </Stack>
 
@@ -377,15 +366,6 @@ export default function ActiveAlarmsPage() {
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <Typography sx={{ color: "#94a3b8", fontSize: 12, mb: 0.5 }}>Cliente (etichette)</Typography>
-              <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                {tenantOptions.map((value) => (
-                  <Chip key={value} label={value} size="small" clickable color={tenantFilters.includes(value) ? "primary" : "default"} onClick={() => setTenantFilters((current) => toggleSelection(current, value))} />
-                ))}
-              </Stack>
-            </Grid>
-
-            <Grid item xs={12}>
               <Typography sx={{ color: "#94a3b8", fontSize: 12, mb: 0.5 }}>Tipo allarme (etichette)</Typography>
               <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                 {typeOptions.map((value) => (
@@ -395,40 +375,15 @@ export default function ActiveAlarmsPage() {
             </Grid>
 
             <Grid item xs={12}>
-              <TextField
-                label="Descrizione / tipo allarme (testo libero)"
-                size="small"
-                value={descriptionFilter}
-                onChange={(event) => setDescriptionFilter(event.target.value)}
-                fullWidth
-                sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }}
-              />
+              <TextField label="Descrizione / tipo allarme (testo libero)" size="small" value={descriptionFilter} onChange={(event) => setDescriptionFilter(event.target.value)} fullWidth sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }} />
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <TextField
-                label="Timestamp da"
-                type="datetime-local"
-                size="small"
-                value={timestampFrom}
-                onChange={(event) => setTimestampFrom(event.target.value)}
-                fullWidth
-                InputLabelProps={{ shrink: true }}
-                sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }}
-              />
+              <TextField label="Timestamp da" type="datetime-local" size="small" value={timestampFrom} onChange={(event) => setTimestampFrom(event.target.value)} fullWidth InputLabelProps={{ shrink: true }} sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }} />
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <TextField
-                label="Timestamp a"
-                type="datetime-local"
-                size="small"
-                value={timestampTo}
-                onChange={(event) => setTimestampTo(event.target.value)}
-                fullWidth
-                InputLabelProps={{ shrink: true }}
-                sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }}
-              />
+              <TextField label="Timestamp a" type="datetime-local" size="small" value={timestampTo} onChange={(event) => setTimestampTo(event.target.value)} fullWidth InputLabelProps={{ shrink: true }} sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" }, "& .MuiOutlinedInput-notchedOutline": { borderColor: "rgba(148,163,184,0.24)" } }} />
             </Grid>
           </Grid>
         </Stack>
@@ -447,15 +402,7 @@ export default function ActiveAlarmsPage() {
 
           <Grid container spacing={1}>
             <Grid item xs={12} md={6}>
-              <TextField
-                select
-                label="Fonte"
-                size="small"
-                value={cfgSourceId}
-                onChange={(event) => setCfgSourceId(Number(event.target.value))}
-                fullWidth
-                sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" } }}
-              >
+              <TextField select label="Fonte" size="small" value={cfgSourceId} onChange={(event) => setCfgSourceId(Number(event.target.value))} fullWidth sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" } }}>
                 {Array.from(new Map(sourceTypePairs.map((pair) => [pair.sourceId, pair.sourceName])).entries()).map(([sourceId, sourceName]) => (
                   <MenuItem key={sourceId} value={sourceId}>{sourceName}</MenuItem>
                 ))}
@@ -463,37 +410,24 @@ export default function ActiveAlarmsPage() {
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <TextField
-                select
-                label="Tipo allarme (nome)"
-                size="small"
-                value={cfgType}
-                onChange={(event) => setCfgType(event.target.value)}
-                fullWidth
-                sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" } }}
-              >
-                {sourceTypePairs
-                  .filter((pair) => pair.sourceId === cfgSourceId)
-                  .map((pair) => (
-                    <MenuItem key={`${pair.sourceId}-${pair.type}`} value={pair.type}>{pair.type}</MenuItem>
-                  ))}
+              <TextField select label="Tipo allarme (nome)" size="small" value={cfgType} onChange={(event) => setCfgType(event.target.value)} fullWidth sx={{ input: { color: "#e2e8f0" }, label: { color: "#94a3b8" } }}>
+                {sourceTypePairs.filter((pair) => pair.sourceId === cfgSourceId).map((pair) => (
+                  <MenuItem key={`${pair.sourceId}-${pair.type}`} value={pair.type}>{pair.type}</MenuItem>
+                ))}
               </TextField>
             </Grid>
           </Grid>
 
-          <Box>
-            <Typography sx={{ color: "#94a3b8", fontSize: 12, mb: 0.5 }}>Campi parsati visibili in espansione</Typography>
-            <Grid container spacing={0.5}>
-              {availableDetailFields.map((fieldKey) => (
-                <Grid item xs={12} md={6} key={fieldKey}>
-                  <Stack direction="row" alignItems="center" spacing={0.3}>
-                    <Checkbox size="small" checked={activeCfgFields.includes(fieldKey)} onChange={() => updateDetailFieldConfig(fieldKey)} sx={{ color: "#93c5fd", p: 0.5 }} />
-                    <Typography sx={{ fontSize: 12 }}>{fieldKey}</Typography>
-                  </Stack>
-                </Grid>
-              ))}
-            </Grid>
-          </Box>
+          <Grid container spacing={0.5}>
+            {availableDetailFields.map((fieldKey) => (
+              <Grid item xs={12} md={6} key={fieldKey}>
+                <Stack direction="row" alignItems="center" spacing={0.3}>
+                  <Checkbox size="small" checked={activeCfgFields.includes(fieldKey)} onChange={() => updateDetailFieldConfig(fieldKey)} sx={{ color: "#93c5fd", p: 0.5 }} />
+                  <Typography sx={{ fontSize: 12 }}>{fieldKey}</Typography>
+                </Stack>
+              </Grid>
+            ))}
+          </Grid>
         </Stack>
       </Popover>
 
@@ -504,12 +438,7 @@ export default function ActiveAlarmsPage() {
               <TableCell sx={{ width: 44, borderBottomColor: "rgba(71,85,105,0.35)" }} />
               {tableColumns.map((column) => (
                 <TableCell key={column.key} sx={{ color: "#64748b", borderBottomColor: "rgba(71,85,105,0.35)", fontWeight: 700, minWidth: column.minWidth }}>
-                  <TableSortLabel
-                    active={sortBy === column.key}
-                    direction={sortBy === column.key ? sortDir : "asc"}
-                    onClick={() => toggleSort(column.key)}
-                    sx={{ color: "inherit", "& .MuiTableSortLabel-icon": { color: "#64748b !important" } }}
-                  >
+                  <TableSortLabel active={sortBy === column.key} direction={sortBy === column.key ? sortDir : "asc"} onClick={() => toggleSort(column.key)} sx={{ color: "inherit", "& .MuiTableSortLabel-icon": { color: "#64748b !important" } }}>
                     {column.label}
                   </TableSortLabel>
                 </TableCell>
@@ -546,25 +475,17 @@ export default function ActiveAlarmsPage() {
                     <TableCell sx={{ p: 0, borderBottomColor: "rgba(71,85,105,0.25)" }} colSpan={tableColumns.length + 1}>
                       <Collapse in={Boolean(expandedRows[row.id])} timeout="auto" unmountOnExit>
                         <Box sx={{ p: 1.5, bgcolor: "rgba(2,6,23,0.55)" }}>
-                          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                            <Typography sx={{ color: "#cbd5e1", fontWeight: 600 }}>Campi parsati</Typography>
-                            <Typography sx={{ color: "#64748b", fontSize: 12 }}>Config attiva: {row.sourceName} + {row.title}</Typography>
-                          </Stack>
-
-                          {visibleFields.length === 0 ? (
-                            <Typography sx={{ color: "#64748b" }}>Nessun campo visibile per questa combinazione fonte/tipo. Usa "Configura dettagli".</Typography>
-                          ) : (
-                            <Grid container spacing={1}>
-                              {visibleFields.map((fieldKey) => (
-                                <Grid item xs={12} md={6} key={`${row.id}-${fieldKey}`}>
-                                  <Box sx={{ border: "1px solid rgba(71,85,105,0.35)", borderRadius: 1.5, px: 1, py: 0.8 }}>
-                                    <Typography sx={{ color: "#64748b", fontSize: 11 }}>{fieldKey}</Typography>
-                                    <Typography sx={{ color: "#e2e8f0", fontSize: 13, wordBreak: "break-word" }}>{String(row.parsedFields[fieldKey])}</Typography>
-                                  </Box>
-                                </Grid>
-                              ))}
-                            </Grid>
-                          )}
+                          <Typography sx={{ color: "#cbd5e1", fontWeight: 600, mb: 1 }}>Campi parsati</Typography>
+                          <Grid container spacing={1}>
+                            {visibleFields.map((fieldKey) => (
+                              <Grid item xs={12} md={6} key={`${row.id}-${fieldKey}`}>
+                                <Box sx={{ border: "1px solid rgba(71,85,105,0.35)", borderRadius: 1.5, px: 1, py: 0.8 }}>
+                                  <Typography sx={{ color: "#64748b", fontSize: 11 }}>{fieldKey}</Typography>
+                                  <Typography sx={{ color: "#e2e8f0", fontSize: 13, wordBreak: "break-word" }}>{String(row.parsedFields[fieldKey])}</Typography>
+                                </Box>
+                              </Grid>
+                            ))}
+                          </Grid>
                         </Box>
                       </Collapse>
                     </TableCell>

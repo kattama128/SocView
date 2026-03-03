@@ -18,8 +18,8 @@ export default function ReportsPage() {
         <Paper
           sx={{
             borderRadius: 3,
-            border: "1px solid rgba(71,85,105,0.45)",
-            background: "linear-gradient(180deg, rgba(15,23,42,0.95), rgba(8,17,37,0.9))",
+            border: "1px solid rgba(148,163,184,0.24)",
+            background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))",
             p: 2,
           }}
         >
@@ -40,8 +40,8 @@ export default function ReportsPage() {
         <Paper
           sx={{
             borderRadius: 3,
-            border: "1px solid rgba(71,85,105,0.45)",
-            background: "linear-gradient(180deg, rgba(15,23,42,0.95), rgba(8,17,37,0.9))",
+            border: "1px solid rgba(148,163,184,0.24)",
+            background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))",
             p: 2,
           }}
         >
@@ -62,8 +62,8 @@ export default function ReportsPage() {
         <Paper
           sx={{
             borderRadius: 3,
-            border: "1px solid rgba(71,85,105,0.45)",
-            background: "linear-gradient(180deg, rgba(15,23,42,0.95), rgba(8,17,37,0.9))",
+            border: "1px solid rgba(148,163,184,0.24)",
+            background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))",
             p: 2,
           }}
         >

@@ -4,12 +4,10 @@ import {
   Button,
   Card,
   CardContent,
-  Checkbox,
-  FormControlLabel,
-  Grid,
-  IconButton,
+  Chip,
   MenuItem,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -18,438 +16,159 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
-import DeleteIcon from "@mui/icons-material/Delete";
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { useAuth } from "../context/AuthContext";
+import { useCustomer } from "../context/CustomerContext";
 import {
-  createState,
-  createTag,
-  deleteState,
-  deleteTag,
-  fetchAlertStates,
-  fetchTags,
-  reorderStates,
-  updateState,
-  updateTag,
-} from "../services/alertsApi";
-import { canManageStates, canManageTags } from "../services/roleUtils";
-import { AlertState, Tag } from "../types/alerts";
-
-const tagScopes = ["alert", "source", "tenant"] as const;
+  loadCustomerSourcePreferences,
+  loadGlobalSourcesConfig,
+  saveCustomerSourcePreferences,
+  type CustomerSourcePreferences,
+  type GlobalSourceDefinition,
+} from "../mocks/sourceCatalog";
 
 export default function AdminConfigPage() {
-  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { customers, selectedCustomer, selectedCustomerId, setSelectedCustomerId } = useCustomer();
 
-  const [states, setStates] = useState<AlertState[]>([]);
-  const [tags, setTags] = useState<Tag[]>([]);
+  const [sources, setSources] = useState<GlobalSourceDefinition[]>(() => loadGlobalSourcesConfig());
+  const [preferences, setPreferences] = useState<CustomerSourcePreferences>(() => loadCustomerSourcePreferences());
+  const [message, setMessage] = useState<string | null>(null);
 
-  const [stateDrafts, setStateDrafts] = useState<Record<number, AlertState>>({});
-  const [tagDrafts, setTagDrafts] = useState<Record<number, Tag>>({});
-
-  const [newStateName, setNewStateName] = useState("");
-  const [newStateFinal, setNewStateFinal] = useState(false);
-
-  const [newTagName, setNewTagName] = useState("");
-  const [newTagColor, setNewTagColor] = useState("#1976d2");
-  const [newTagScope, setNewTagScope] = useState<(typeof tagScopes)[number]>("alert");
-
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-
-  const manageStates = canManageStates(user?.role);
-  const manageTags = canManageTags(user?.role);
-
-  const sortedStates = useMemo(() => [...states].sort((a, b) => a.order - b.order), [states]);
-
-  const loadData = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [statesResp, tagsResp] = await Promise.all([fetchAlertStates(), fetchTags()]);
-      setStates(statesResp);
-      setTags(tagsResp);
-
-      setStateDrafts(
-        Object.fromEntries(statesResp.map((state) => [state.id, { ...state }])),
-      );
-      setTagDrafts(
-        Object.fromEntries(tagsResp.map((tag) => [tag.id, { ...tag }])),
-      );
-    } catch {
-      setError("Impossibile caricare configurazioni tenant.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const queryCustomerId = Number(searchParams.get("customerId") ?? 0) || null;
 
   useEffect(() => {
-    void loadData();
+    setSources(loadGlobalSourcesConfig());
+    setPreferences(loadCustomerSourcePreferences());
   }, []);
 
-  const run = async (action: () => Promise<void>, message: string) => {
-    setBusy(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      await action();
-      await loadData();
-      setSuccess(message);
-    } catch {
-      setError("Operazione non riuscita.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const moveState = (index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= sortedStates.length) {
+  useEffect(() => {
+    if (queryCustomerId && queryCustomerId !== selectedCustomerId) {
+      setSelectedCustomerId(queryCustomerId);
       return;
     }
+    if (!selectedCustomerId && customers.length) {
+      setSelectedCustomerId(customers[0].id);
+    }
+  }, [customers, queryCustomerId, selectedCustomerId, setSelectedCustomerId]);
 
-    const mutable = [...sortedStates];
-    const [item] = mutable.splice(index, 1);
-    mutable.splice(target, 0, item);
-    const orderedIds = mutable.map((state) => state.id);
+  const activeCustomer = useMemo(() => {
+    if (selectedCustomer) {
+      return selectedCustomer;
+    }
+    if (selectedCustomerId) {
+      return customers.find((item) => item.id === selectedCustomerId) ?? null;
+    }
+    return null;
+  }, [customers, selectedCustomer, selectedCustomerId]);
 
-    void run(
-      async () => {
-        await reorderStates(orderedIds);
+  const enabledCount = useMemo(() => {
+    if (!activeCustomer) {
+      return 0;
+    }
+    return sources.filter((source) => preferences[activeCustomer.id]?.[source.id] ?? true).length;
+  }, [activeCustomer, preferences, sources]);
+
+  const toggleSourceForCustomer = (sourceId: number, enabled: boolean) => {
+    if (!activeCustomer) {
+      return;
+    }
+    setPreferences((current) => ({
+      ...current,
+      [activeCustomer.id]: {
+        ...(current[activeCustomer.id] ?? {}),
+        [sourceId]: enabled,
       },
-      "Ordine stati aggiornato",
-    );
+    }));
+    setMessage(null);
   };
 
-  if (loading) {
-    return <Typography>Caricamento configurazione...</Typography>;
+  const save = () => {
+    saveCustomerSourcePreferences(preferences);
+    setMessage("Abilitazioni fonti del cliente salvate.");
+  };
+
+  if (!activeCustomer) {
+    return <Alert severity="info">Seleziona un cliente dal menu in alto a destra.</Alert>;
   }
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h5">Amministrazione Tenant</Typography>
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {success ? <Alert severity="success">{success}</Alert> : null}
-
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Stati Alert
+      <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} spacing={1.5}>
+        <Box>
+          <Typography sx={{ color: "#f8fafc", fontSize: { xs: 26, md: 34 }, fontWeight: 700 }}>
+            Impostazioni Cliente
           </Typography>
+          <Typography sx={{ color: "#64748b" }}>
+            Qui puoi solo abilitare/disabilitare le fonti globali per il cliente selezionato.
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1}>
+          <TextField
+            select
+            size="small"
+            label="Cliente"
+            value={activeCustomer.id}
+            onChange={(event) => setSelectedCustomerId(Number(event.target.value))}
+            sx={{ minWidth: 220, "& .MuiOutlinedInput-root": { bgcolor: "rgba(15,23,42,0.86)", color: "#cbd5e1" } }}
+          >
+            {customers.map((customer) => (
+              <MenuItem key={customer.id} value={customer.id}>
+                {customer.name}
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button variant="outlined" onClick={() => navigate("/sources")}>Gestisci fonti globali</Button>
+          <Button variant="contained" onClick={save}>Salva</Button>
+        </Stack>
+      </Stack>
 
-          {!manageStates ? (
-            <Alert severity="info">Solo SOC Manager o SuperAdmin possono modificare gli stati.</Alert>
-          ) : null}
+      {message ? <Alert severity="success">{message}</Alert> : null}
 
-          <Grid container spacing={2} sx={{ mb: 2 }}>
-            <Grid item xs={12} md={4}>
-              <TextField
-                fullWidth
-                label="Nuovo stato"
-                value={newStateName}
-                onChange={(event) => setNewStateName(event.target.value)}
-                disabled={!manageStates || busy}
-              />
-            </Grid>
-            <Grid item xs={12} md={3}>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={newStateFinal}
-                    onChange={(event) => setNewStateFinal(event.target.checked)}
-                    disabled={!manageStates || busy}
-                  />
-                }
-                label="Stato finale"
-              />
-            </Grid>
-            <Grid item xs={12} md={2}>
-              <Button
-                variant="contained"
-                disabled={!manageStates || busy || !newStateName.trim()}
-                onClick={() =>
-                  run(
-                    async () => {
-                      await createState({
-                        name: newStateName.trim(),
-                        order: sortedStates.length,
-                        is_final: newStateFinal,
-                        is_enabled: true,
-                      });
-                      setNewStateName("");
-                      setNewStateFinal(false);
-                    },
-                    "Stato creato",
-                  )
-                }
-              >
-                Aggiungi
-              </Button>
-            </Grid>
-          </Grid>
+      <Stack direction="row" spacing={1}>
+        <Chip
+          size="small"
+          label={`Cliente: ${activeCustomer.name}`}
+          sx={{ color: "#93c5fd", border: "1px solid rgba(59,130,246,0.35)", background: "rgba(30,64,175,0.18)" }}
+        />
+        <Chip
+          size="small"
+          label={`Fonti abilitate: ${enabledCount}/${sources.length}`}
+          sx={{ color: "#86efac", border: "1px solid rgba(74,222,128,0.35)", background: "rgba(20,83,45,0.2)" }}
+        />
+      </Stack>
 
+      <Card sx={{ borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))" }}>
+        <CardContent>
+          <Typography sx={{ color: "#e2e8f0", fontWeight: 700, mb: 1.2 }}>Abilitazioni Fonti per Cliente</Typography>
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Ordine</TableCell>
-                <TableCell>Nome</TableCell>
-                <TableCell>Finale</TableCell>
-                <TableCell>Abilitato</TableCell>
-                <TableCell>Azioni</TableCell>
+                <TableCell sx={{ color: "#94a3b8" }}>Fonte</TableCell>
+                <TableCell sx={{ color: "#94a3b8" }}>Metodo</TableCell>
+                <TableCell sx={{ color: "#94a3b8" }}>Endpoint</TableCell>
+                <TableCell sx={{ color: "#94a3b8" }}>Parser</TableCell>
+                <TableCell sx={{ color: "#94a3b8" }}>Tipi allarme</TableCell>
+                <TableCell sx={{ color: "#94a3b8" }}>Abilitata per cliente</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {sortedStates.map((state, index) => {
-                const draft = stateDrafts[state.id] ?? state;
+              {sources.map((source) => {
+                const enabled = preferences[activeCustomer.id]?.[source.id] ?? true;
                 return (
-                  <TableRow key={state.id}>
-                    <TableCell>{state.order}</TableCell>
+                  <TableRow key={source.id}>
+                    <TableCell sx={{ color: "#e2e8f0" }}>{source.name}</TableCell>
+                    <TableCell sx={{ color: "#cbd5e1" }}>{source.method}</TableCell>
+                    <TableCell sx={{ color: "#94a3b8", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }}>{source.endpoint}</TableCell>
+                    <TableCell sx={{ color: "#c4b5fd" }}>{source.parserEntries.length}</TableCell>
+                    <TableCell sx={{ color: "#fcd34d" }}>{source.alertTypeRules.length}</TableCell>
                     <TableCell>
-                      <TextField
-                        value={draft.name}
-                        size="small"
-                        disabled={!manageStates || busy}
-                        onChange={(event) =>
-                          setStateDrafts((prev) => ({
-                            ...prev,
-                            [state.id]: { ...draft, name: event.target.value },
-                          }))
-                        }
+                      <Switch
+                        checked={enabled}
+                        onChange={(event) => toggleSourceForCustomer(source.id, event.target.checked)}
                       />
-                    </TableCell>
-                    <TableCell>
-                      <Checkbox
-                        checked={draft.is_final}
-                        disabled={!manageStates || busy}
-                        onChange={(event) =>
-                          setStateDrafts((prev) => ({
-                            ...prev,
-                            [state.id]: { ...draft, is_final: event.target.checked },
-                          }))
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Checkbox
-                        checked={draft.is_enabled}
-                        disabled={!manageStates || busy}
-                        onChange={(event) =>
-                          setStateDrafts((prev) => ({
-                            ...prev,
-                            [state.id]: { ...draft, is_enabled: event.target.checked },
-                          }))
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <IconButton
-                        size="small"
-                        disabled={!manageStates || busy}
-                        onClick={() => moveState(index, -1)}
-                      >
-                        <ArrowUpwardIcon fontSize="inherit" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        disabled={!manageStates || busy}
-                        onClick={() => moveState(index, 1)}
-                      >
-                        <ArrowDownwardIcon fontSize="inherit" />
-                      </IconButton>
-                      <Button
-                        size="small"
-                        disabled={!manageStates || busy}
-                        onClick={() =>
-                          run(
-                            async () => {
-                              await updateState(state.id, {
-                                name: draft.name,
-                                is_final: draft.is_final,
-                                is_enabled: draft.is_enabled,
-                              });
-                            },
-                            "Stato aggiornato",
-                          )
-                        }
-                      >
-                        Salva
-                      </Button>
-                      <IconButton
-                        size="small"
-                        disabled={!manageStates || busy}
-                        onClick={() =>
-                          run(async () => deleteState(state.id), "Stato eliminato")
-                        }
-                      >
-                        <DeleteIcon fontSize="inherit" />
-                      </IconButton>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Tag
-          </Typography>
-
-          {!manageTags ? <Alert severity="info">Il tuo ruolo non puo gestire i tag.</Alert> : null}
-
-          <Grid container spacing={2} sx={{ mb: 2 }}>
-            <Grid item xs={12} md={3}>
-              <TextField
-                fullWidth
-                label="Nuovo tag"
-                value={newTagName}
-                onChange={(event) => setNewTagName(event.target.value)}
-                disabled={!manageTags || busy}
-              />
-            </Grid>
-            <Grid item xs={12} md={3}>
-              <TextField
-                fullWidth
-                label="Colore"
-                value={newTagColor}
-                onChange={(event) => setNewTagColor(event.target.value)}
-                disabled={!manageTags || busy}
-              />
-            </Grid>
-            <Grid item xs={12} md={3}>
-              <TextField
-                select
-                fullWidth
-                label="Scope"
-                value={newTagScope}
-                onChange={(event) => setNewTagScope(event.target.value as (typeof tagScopes)[number])}
-                disabled={!manageTags || busy}
-              >
-                {tagScopes.map((scope) => (
-                  <MenuItem key={scope} value={scope}>
-                    {scope}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
-            <Grid item xs={12} md={2}>
-              <Button
-                variant="contained"
-                disabled={!manageTags || busy || !newTagName.trim()}
-                onClick={() =>
-                  run(
-                    async () => {
-                      await createTag({
-                        name: newTagName.trim(),
-                        color: newTagColor,
-                        scope: newTagScope,
-                        metadata: {},
-                      });
-                      setNewTagName("");
-                    },
-                    "Tag creato",
-                  )
-                }
-              >
-                Aggiungi
-              </Button>
-            </Grid>
-          </Grid>
-
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Nome</TableCell>
-                <TableCell>Scope</TableCell>
-                <TableCell>Colore</TableCell>
-                <TableCell>Azioni</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {tags.map((tag) => {
-                const draft = tagDrafts[tag.id] ?? tag;
-                return (
-                  <TableRow key={tag.id}>
-                    <TableCell>
-                      <TextField
-                        value={draft.name}
-                        size="small"
-                        disabled={!manageTags || busy}
-                        onChange={(event) =>
-                          setTagDrafts((prev) => ({
-                            ...prev,
-                            [tag.id]: { ...draft, name: event.target.value },
-                          }))
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <TextField
-                        select
-                        value={draft.scope}
-                        size="small"
-                        disabled={!manageTags || busy}
-                        onChange={(event) =>
-                          setTagDrafts((prev) => ({
-                            ...prev,
-                            [tag.id]: { ...draft, scope: event.target.value as Tag["scope"] },
-                          }))
-                        }
-                      >
-                        {tagScopes.map((scope) => (
-                          <MenuItem key={scope} value={scope}>
-                            {scope}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </TableCell>
-                    <TableCell>
-                      <TextField
-                        value={draft.color}
-                        size="small"
-                        disabled={!manageTags || busy}
-                        onChange={(event) =>
-                          setTagDrafts((prev) => ({
-                            ...prev,
-                            [tag.id]: { ...draft, color: event.target.value },
-                          }))
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        size="small"
-                        disabled={!manageTags || busy}
-                        onClick={() =>
-                          run(
-                            async () => {
-                              await updateTag(tag.id, {
-                                name: draft.name,
-                                scope: draft.scope,
-                                color: draft.color,
-                                metadata: draft.metadata,
-                              });
-                            },
-                            "Tag aggiornato",
-                          )
-                        }
-                      >
-                        Salva
-                      </Button>
-                      <IconButton
-                        size="small"
-                        disabled={!manageTags || busy}
-                        onClick={() => run(async () => deleteTag(tag.id), "Tag eliminato")}
-                      >
-                        <DeleteIcon fontSize="inherit" />
-                      </IconButton>
                     </TableCell>
                   </TableRow>
                 );
