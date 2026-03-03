@@ -6,6 +6,7 @@ import ActiveAlarmsPage from "./pages/ActiveAlarmsPage";
 import AdminConfigPage from "./pages/AdminConfigPage";
 import CostumersPage from "./pages/CostumersPage";
 import CustomerAlarmsPage from "./pages/CustomerAlarmsPage";
+import CustomerSettingsPage from "./pages/CustomerSettingsPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import ReportsPage from "./pages/ReportsPage";
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/tenant" element={<Navigate to="/" replace />} />
           <Route path="/costumers" element={<CostumersPage />} />
           <Route path="/costumers/:customerId" element={<CustomerAlarmsPage />} />
+          <Route path="/costumers/:customerId/settings" element={<CustomerSettingsPage />} />
           <Route path="/sources" element={<SourcesPage />} />
           <Route path="/fonti" element={<Navigate to="/sources" replace />} />
           <Route path="/reports" element={<ReportsPage />} />

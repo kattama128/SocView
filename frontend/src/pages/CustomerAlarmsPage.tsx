@@ -309,7 +309,7 @@ export default function CustomerAlarmsPage() {
           <Button variant="outlined" startIcon={<TuneIcon />} sx={{ borderColor: "rgba(71,85,105,0.55)", color: "#cbd5e1" }} onClick={(event) => setDetailCfgAnchor(event.currentTarget)}>
             Configura dettagli
           </Button>
-          <Button variant="contained" startIcon={<SettingsIcon />} sx={{ background: "linear-gradient(180deg,#3b82f6,#1d4ed8)" }} onClick={() => navigate(`/configurazione?customerId=${customer.id}&customer=${encodeURIComponent(customer.name)}`)}>
+          <Button variant="contained" startIcon={<SettingsIcon />} sx={{ background: "linear-gradient(180deg,#3b82f6,#1d4ed8)" }} onClick={() => navigate(`/costumers/${customer.id}/settings`)}>
             Impostazioni
           </Button>
         </Stack>
