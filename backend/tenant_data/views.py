@@ -12,6 +12,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -56,6 +57,11 @@ from tenant_data.serializers import (
 )
 
 User = get_user_model()
+
+class AlertPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 500
 
 
 class AlertStateViewSet(viewsets.ModelViewSet):
@@ -184,6 +190,7 @@ class TagViewSet(viewsets.ModelViewSet):
 
 
 class AlertViewSet(viewsets.ModelViewSet):
+    pagination_class = AlertPagination
     queryset = (
         Alert.objects.select_related("current_state")
         .prefetch_related("alert_tags__tag", "comments__author", "attachments", "audit_logs", "assignment")
@@ -409,9 +416,14 @@ class AlertViewSet(viewsets.ModelViewSet):
                 "new_assigned_to": assignee.username if assignee else None,
             },
         )
-        return Response(AlertDetailSerializer(alert, context={"request": request}).data)
+        refreshed_alert = self.get_queryset().get(pk=alert.pk)
+        return Response(AlertDetailSerializer(refreshed_alert, context={"request": request}).data)
 
-    @extend_schema(request=CommentCreateSerializer, responses=CommentSerializer(many=True), tags=["Alerts"])
+    @extend_schema(
+        request=CommentCreateSerializer,
+        responses={200: CommentSerializer(many=True), 201: CommentSerializer},
+        tags=["Alerts"],
+    )
     @action(detail=True, methods=["get", "post"], url_path="comments")
     def comments(self, request, pk=None):
         alert = self.get_object()

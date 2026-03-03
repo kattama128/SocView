@@ -118,6 +118,9 @@ class SourceSerializer(serializers.ModelSerializer):
                 },
             )
 
+        instance.refresh_from_db()
+        instance._state.fields_cache.pop("config", None)
+        instance._state.fields_cache.pop("dedup_policy", None)
         return instance
 
     def get_webhook_endpoint(self, obj):

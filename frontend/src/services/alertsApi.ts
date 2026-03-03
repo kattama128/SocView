@@ -20,11 +20,16 @@ export type AlertFilters = {
   severity?: string;
   text?: string;
   is_active?: string;
+  page?: number;
+  page_size?: number;
 };
 
 export async function fetchAlerts(filters: AlertFilters = {}): Promise<Alert[]> {
-  const response = await api.get<Alert[]>("/alerts/alerts/", { params: filters });
-  return response.data;
+  const response = await api.get<Alert[] | { results: Alert[] }>("/alerts/alerts/", { params: filters });
+  if (Array.isArray(response.data)) {
+    return response.data;
+  }
+  return response.data.results ?? [];
 }
 
 export async function searchAlerts(payload: SearchRequest): Promise<SearchResponse> {

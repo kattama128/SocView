@@ -252,6 +252,13 @@ class AlertSearchRequestSerializer(serializers.Serializer):
 
 
 class SavedSearchSerializer(serializers.ModelSerializer):
+    severity = serializers.ChoiceField(
+        choices=Alert.Severity.choices,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+
     class Meta:
         model = SavedSearch
         fields = (
@@ -268,6 +275,11 @@ class SavedSearchSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
+
+    def validate_severity(self, value):
+        if value is None:
+            return ""
+        return value
 
     def validate_dynamic_filters(self, value):
         if not isinstance(value, list):

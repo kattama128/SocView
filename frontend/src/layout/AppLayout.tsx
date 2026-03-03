@@ -96,13 +96,19 @@ export default function AppLayout() {
   };
 
   useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      setUnreadCount(0);
+      return;
+    }
+
     void loadNotifications();
     const timer = window.setInterval(() => {
       void loadNotifications();
     }, 15000);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [user]);
 
   const handleLogout = () => {
     logout();
