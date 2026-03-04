@@ -20,6 +20,105 @@ class TimeStampedModel(models.Model):
         abstract = True
 
 
+class Customer(TimeStampedModel):
+    name = models.CharField(max_length=150)
+    code = models.CharField(max_length=64, blank=True)
+    is_enabled = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ("name", "id")
+        constraints = [
+            models.UniqueConstraint(fields=("name",), name="tenant_data_customer_name_unique"),
+        ]
+        indexes = [
+            models.Index(fields=("is_enabled", "name"), name="cust_enabled_name_idx"),
+        ]
+
+    def __str__(self):
+        if self.code:
+            return f"{self.name} ({self.code})"
+        return self.name
+
+
+class CustomerMembership(TimeStampedModel):
+    class Scope(models.TextChoices):
+        VIEWER = "viewer", "Viewer"
+        TRIAGE = "triage", "Triage"
+        MANAGER = "manager", "Manager"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="customer_memberships",
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    scope = models.CharField(max_length=20, choices=Scope.choices, default=Scope.TRIAGE)
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ("customer_id", "user_id")
+        unique_together = (("user", "customer"),)
+        indexes = [
+            models.Index(fields=("user", "is_active"), name="custmemb_user_active_idx"),
+            models.Index(fields=("customer", "is_active"), name="custmemb_customer_active_idx"),
+            models.Index(fields=("scope", "is_active"), name="custmemb_scope_active_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.customer_id}:{self.scope}"
+
+
+class CustomerSettings(TimeStampedModel):
+    class Tier(models.TextChoices):
+        BRONZE = "Bronze", "Bronze"
+        SILVER = "Silver", "Silver"
+        GOLD = "Gold", "Gold"
+        PLATINUM = "Platinum", "Platinum"
+
+    class DefaultSeverity(models.TextChoices):
+        LOW = "low", "Low"
+        MEDIUM = "medium", "Medium"
+        HIGH = "high", "High"
+        CRITICAL = "critical", "Critical"
+
+    customer = models.OneToOneField(Customer, on_delete=models.CASCADE, related_name="settings")
+    tier = models.CharField(max_length=20, choices=Tier.choices, default=Tier.GOLD)
+    timezone = models.CharField(max_length=64, default="Europe/Rome")
+    sla_target = models.CharField(max_length=64, default="15m")
+    primary_contact = models.CharField(max_length=150, default="SOC Lead")
+    contact_email = models.EmailField(default="soc@example.com")
+    contact_phone = models.CharField(max_length=64, default="+39 000 000 000")
+    notify_channels = models.CharField(max_length=255, default="Email, Slack, PagerDuty")
+    escalation_matrix = models.CharField(max_length=255, default="L1 -> L2 -> L3")
+    maintenance_window = models.CharField(max_length=255, default="Sunday 02:00 - 03:00")
+    default_severity = models.CharField(
+        max_length=20,
+        choices=DefaultSeverity.choices,
+        default=DefaultSeverity.MEDIUM,
+    )
+    auto_assign_team = models.CharField(max_length=120, default="SOC L1")
+    notify_on_critical = models.BooleanField(default=True)
+    notify_on_high = models.BooleanField(default=True)
+    allow_suppress = models.BooleanField(default=True)
+    retention_days = models.PositiveIntegerField(default=365)
+    tag_defaults = models.CharField(max_length=255, default="customer, socview")
+    enrich_geo = models.BooleanField(default=True)
+    enrich_threat_intel = models.BooleanField(default=True)
+    allow_external_sharing = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("customer_id",)
+
+    def __str__(self):
+        return f"Settings for customer {self.customer_id}"
+
+
 class AlertState(TimeStampedModel):
     name = models.CharField(max_length=100, unique=True)
     order = models.PositiveIntegerField(default=0)
@@ -60,6 +159,13 @@ class Alert(TimeStampedModel):
         CRITICAL = "critical", "Critical"
 
     title = models.CharField(max_length=255)
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="alerts",
+    )
     severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.MEDIUM)
     event_timestamp = models.DateTimeField()
     source_name = models.CharField(max_length=120)
@@ -73,6 +179,11 @@ class Alert(TimeStampedModel):
 
     class Meta:
         ordering = ("-event_timestamp", "-id")
+        indexes = [
+            models.Index(fields=("customer", "-event_timestamp"), name="alert_customer_event_ts_idx"),
+            models.Index(fields=("customer", "severity"), name="alert_customer_severity_idx"),
+            models.Index(fields=("customer", "source_name"), name="alert_customer_source_idx"),
+        ]
 
     @property
     def is_active(self):
@@ -194,18 +305,80 @@ class Source(TimeStampedModel):
         IMAP = "imap", "IMAP"
         REST = "rest", "REST"
         WEBHOOK = "webhook", "Webhook"
+        SYSLOG_UDP = "syslog_udp", "Syslog UDP"
+        SYSLOG_TCP = "syslog_tcp", "Syslog TCP"
+        KAFKA_TOPIC = "kafka_topic", "Kafka Topic"
+        S3_BUCKET = "s3_bucket", "S3 Bucket"
+        AZURE_EVENT_HUB = "azure_event_hub", "Azure Event Hub"
+        GCP_PUBSUB = "gcp_pubsub", "GCP Pub/Sub"
+        SFTP_DROP = "sftp_drop", "SFTP Drop"
 
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sources",
+    )
     name = models.CharField(max_length=150)
+    description = models.TextField(blank=True, default="")
     type = models.CharField(max_length=20, choices=Type.choices)
     is_enabled = models.BooleanField(default=True)
     severity_map = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ("name",)
-        unique_together = (("name", "type"),)
+        unique_together = (("customer", "name", "type"),)
+        indexes = [
+            models.Index(fields=("customer", "type", "is_enabled"), name="src_cust_type_enabled_idx"),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.type})"
+
+
+class CustomerSourcePreference(TimeStampedModel):
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="source_preferences")
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="customer_preferences")
+    is_enabled = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("customer_id", "source_id")
+        unique_together = (("customer", "source"),)
+        indexes = [
+            models.Index(fields=("customer", "is_enabled"), name="custsrcpref_cust_enabled_idx"),
+            models.Index(fields=("source", "is_enabled"), name="custsrcpref_src_enabled_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.customer_id}:{self.source_id}={self.is_enabled}"
+
+
+class SourceAlertTypeRule(TimeStampedModel):
+    class MatchMode(models.TextChoices):
+        EXACT = "exact", "Exact"
+        CONTAINS = "contains", "Contains"
+        REGEX = "regex", "Regex"
+
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="alert_type_rules")
+    alert_name = models.CharField(max_length=255)
+    match_mode = models.CharField(max_length=20, choices=MatchMode.choices, default=MatchMode.EXACT)
+    severity = models.CharField(max_length=20, choices=Alert.Severity.choices, default=Alert.Severity.MEDIUM)
+    is_enabled = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+    received_count = models.PositiveIntegerField(default=0)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("alert_name", "id")
+        unique_together = (("source", "alert_name", "match_mode"),)
+        indexes = [
+            models.Index(fields=("source", "is_enabled"), name="srcalrule_src_enabled_idx"),
+            models.Index(fields=("source", "alert_name"), name="srcalrule_src_name_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.source_id}:{self.alert_name}:{self.match_mode}"
 
 
 class ParserDefinition(TimeStampedModel):
@@ -312,6 +485,13 @@ class IngestionRun(models.Model):
         PARTIAL = "partial", "Partial"
         ERROR = "error", "Error"
 
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ingestion_runs",
+    )
     source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="ingestion_runs")
     trigger = models.CharField(max_length=20, choices=Trigger.choices, default=Trigger.SCHEDULED)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)
@@ -326,6 +506,9 @@ class IngestionRun(models.Model):
 
     class Meta:
         ordering = ("-started_at", "-id")
+        indexes = [
+            models.Index(fields=("customer", "-started_at"), name="ingrun_customer_started_idx"),
+        ]
 
     def __str__(self):
         return f"Run {self.id} {self.source.name} ({self.status})"
@@ -360,6 +543,13 @@ class SavedSearch(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="saved_searches",
     )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="saved_searches",
+    )
     name = models.CharField(max_length=150)
     text_query = models.CharField(max_length=255, blank=True)
     source_name = models.CharField(max_length=150, blank=True)
@@ -372,10 +562,44 @@ class SavedSearch(TimeStampedModel):
 
     class Meta:
         ordering = ("name", "id")
-        unique_together = (("user", "name"),)
+        unique_together = (("user", "customer", "name"),)
+        indexes = [
+            models.Index(fields=("customer", "user"), name="savedsearch_customer_user_idx"),
+        ]
 
     def __str__(self):
         return f"{self.user_id}:{self.name}"
+
+
+class AlertDetailFieldConfig(TimeStampedModel):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="alert_detail_field_configs",
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="alert_detail_field_configs",
+    )
+    source_name = models.CharField(max_length=150)
+    alert_type = models.CharField(max_length=255)
+    visible_fields = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ("source_name", "alert_type", "id")
+        unique_together = (("user", "customer", "source_name", "alert_type"),)
+        indexes = [
+            models.Index(
+                fields=("customer", "user", "source_name", "alert_type"),
+                name="alertdetailcfg_scope_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.source_name}:{self.alert_type}"
 
 
 class NotificationEvent(TimeStampedModel):
@@ -386,6 +610,13 @@ class NotificationEvent(TimeStampedModel):
         CRITICAL = "critical", "Critical"
 
     alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name="notifications")
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
     title = models.CharField(max_length=255)
     message = models.TextField(blank=True)
     severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.MEDIUM)
@@ -394,6 +625,9 @@ class NotificationEvent(TimeStampedModel):
 
     class Meta:
         ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("customer", "is_active", "-created_at"), name="notif_cust_active_created_idx"),
+        ]
 
     def __str__(self):
         return f"{self.severity}:{self.title}"

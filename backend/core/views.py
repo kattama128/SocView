@@ -3,16 +3,19 @@ from django.db import connection
 from rest_framework import permissions, status
 from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, inline_serializer
 
+from accounts.rbac import CAP_VIEW, has_capability, permissions_map_for_user
 from core.dashboard import (
     build_dashboard_payload,
     get_tenant_summaries_for_user,
     update_tenant_order_for_user,
     update_widget_layout,
 )
+from tenant_data.rbac import get_accessible_customer_ids, parse_and_validate_customer_id
 
 RootResponseSerializer = inline_serializer(
     name="RootResponseSerializer",
@@ -42,6 +45,7 @@ CurrentContextSerializer = inline_serializer(
         "user": serializers.CharField(),
         "role": serializers.CharField(),
         "tenant": serializers.CharField(),
+        "permissions": serializers.DictField(child=serializers.BooleanField()),
     },
 )
 
@@ -119,12 +123,15 @@ class CurrentContextView(APIView):
 
     @extend_schema(responses=CurrentContextSerializer, tags=["System"])
     def get(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            raise PermissionDenied("Permessi insufficienti")
         tenant = getattr(request, "tenant", None)
         return Response(
             {
                 "user": request.user.username,
                 "role": request.user.role,
                 "tenant": getattr(tenant, "schema_name", "public"),
+                "permissions": permissions_map_for_user(request.user),
             },
             status=status.HTTP_200_OK,
         )
@@ -133,9 +140,22 @@ class CurrentContextView(APIView):
 class DashboardWidgetsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    def _parse_customer_id(self, request):
+        return parse_and_validate_customer_id(
+            request.query_params.get("customer_id"),
+            user=request.user,
+            capability=CAP_VIEW,
+        )
+
     @extend_schema(responses=DashboardPayloadSerializer, tags=["Dashboard"])
     def get(self, request):
-        payload = build_dashboard_payload(request.user)
+        if not has_capability(request.user, CAP_VIEW):
+            raise PermissionDenied("Permessi insufficienti")
+        payload = build_dashboard_payload(
+            request.user,
+            customer_id=self._parse_customer_id(request),
+            allowed_customer_ids=get_accessible_customer_ids(request.user),
+        )
         return Response(payload, status=status.HTTP_200_OK)
 
     @extend_schema(
@@ -147,11 +167,17 @@ class DashboardWidgetsView(APIView):
         tags=["Dashboard"],
     )
     def put(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            raise PermissionDenied("Permessi insufficienti")
         widgets_layout = request.data.get("widgets_layout", [])
         if not isinstance(widgets_layout, list):
             return Response({"detail": "widgets_layout deve essere una lista"}, status=status.HTTP_400_BAD_REQUEST)
         update_widget_layout(request.user, widgets_layout)
-        payload = build_dashboard_payload(request.user)
+        payload = build_dashboard_payload(
+            request.user,
+            customer_id=self._parse_customer_id(request),
+            allowed_customer_ids=get_accessible_customer_ids(request.user),
+        )
         return Response(payload, status=status.HTTP_200_OK)
 
 
@@ -160,6 +186,8 @@ class DashboardTenantsView(APIView):
 
     @extend_schema(responses=DashboardTenantSerializer, tags=["Dashboard"])
     def get(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            raise PermissionDenied("Permessi insufficienti")
         payload = get_tenant_summaries_for_user(request.user, request_tenant=getattr(request, "tenant", None))
         return Response(payload, status=status.HTTP_200_OK)
 
@@ -179,6 +207,8 @@ class DashboardTenantsReorderView(APIView):
         tags=["Dashboard"],
     )
     def post(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            raise PermissionDenied("Permessi insufficienti")
         schema_order = request.data.get("schema_order", [])
         if not isinstance(schema_order, list):
             return Response({"detail": "schema_order deve essere una lista"}, status=status.HTTP_400_BAD_REQUEST)

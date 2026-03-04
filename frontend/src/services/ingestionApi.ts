@@ -1,8 +1,19 @@
 import api from "./api";
-import { ConnectionTestResult, IngestionRun, Source, SourceWritePayload } from "../types/ingestion";
+import {
+  ConnectionTestResult,
+  IngestionRun,
+  Source,
+  SourceCapabilitiesResponse,
+  SourceWritePayload,
+} from "../types/ingestion";
 
-export async function fetchSources(): Promise<Source[]> {
-  const response = await api.get<Source[]>("/ingestion/sources/");
+export async function fetchSources(options?: { scope?: "all" | "global"; customerId?: number | null }): Promise<Source[]> {
+  const response = await api.get<Source[]>("/ingestion/sources/", {
+    params: {
+      ...(options?.scope ? { scope: options.scope } : {}),
+      ...(options?.customerId ? { customer_id: options.customerId } : {}),
+    },
+  });
   return response.data;
 }
 
@@ -18,6 +29,21 @@ export async function updateSource(sourceId: number, payload: Partial<SourceWrit
 
 export async function deleteSource(sourceId: number): Promise<void> {
   await api.delete(`/ingestion/sources/${sourceId}/`);
+}
+
+export async function fetchSourceCapabilities(): Promise<SourceCapabilitiesResponse> {
+  const response = await api.get<SourceCapabilitiesResponse>("/ingestion/sources/capabilities/");
+  return response.data;
+}
+
+export async function createSourceFromPreset(payload: {
+  preset_key: string;
+  name?: string;
+  description?: string;
+  customer_id?: number | null;
+}): Promise<Source> {
+  const response = await api.post<Source>("/ingestion/sources/create-from-preset/", payload);
+  return response.data;
 }
 
 export async function testSourceConnection(sourceId: number): Promise<ConnectionTestResult> {

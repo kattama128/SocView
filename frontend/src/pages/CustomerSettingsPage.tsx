@@ -1,91 +1,89 @@
-import {
-  Alert,
-  Box,
-  Button,
-  Card,
-  CardContent,
-  Chip,
-  Divider,
-  Grid,
-  MenuItem,
-  Stack,
-  Switch,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-  TextField,
-  Typography,
-} from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { Alert, Stack, Tab, Tabs } from "@mui/material";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
+import TabPanel from "../components/TabPanel";
 import { useCustomer } from "../context/CustomerContext";
+import CustomerAlarmPolicyCard from "../features/customers/CustomerAlarmPolicyCard";
+import CustomerProfileCard from "../features/customers/CustomerProfileCard";
+import CustomerSettingsHeader from "../features/customers/CustomerSettingsHeader";
+import CustomerSourcesTable from "../features/customers/CustomerSourcesTable";
+import CustomerSummaryChips from "../features/customers/CustomerSummaryChips";
+import { defaultCustomerSettings, type CustomerSettings } from "../features/customers/types";
 import {
-  loadCustomerSourcePreferences,
-  loadGlobalSourcesConfig,
-  saveCustomerSourcePreferences,
-  type CustomerSourcePreferences,
-  type GlobalSourceDefinition,
-} from "../mocks/sourceCatalog";
+  fetchCustomerSettings,
+  updateCustomerSettings,
+} from "../services/alertsApi";
+import { CustomerSettingsApi, CustomerSourceCatalogEntry } from "../types/alerts";
 
-const settingsStorageKey = "socview_customer_settings_v1";
+type Notice = { severity: "success" | "error" | "info"; message: string } | null;
 
-type CustomerSettings = {
-  tier: string;
-  timezone: string;
-  slaTarget: string;
-  primaryContact: string;
-  contactEmail: string;
-  contactPhone: string;
-  notifyChannels: string;
-  escalationMatrix: string;
-  maintenanceWindow: string;
-  defaultSeverity: string;
-  autoAssignTeam: string;
-  notifyOnCritical: boolean;
-  notifyOnHigh: boolean;
-  allowSuppress: boolean;
-  retentionDays: number;
-  tagDefaults: string;
-  enrichGeo: boolean;
-  enrichThreatIntel: boolean;
-  allowExternalSharing: boolean;
-};
+function fromApi(settings: CustomerSettingsApi): CustomerSettings {
+  return {
+    tier: settings.tier,
+    timezone: settings.timezone,
+    slaTarget: settings.sla_target,
+    primaryContact: settings.primary_contact,
+    contactEmail: settings.contact_email,
+    contactPhone: settings.contact_phone,
+    notifyChannels: settings.notify_channels,
+    escalationMatrix: settings.escalation_matrix,
+    maintenanceWindow: settings.maintenance_window,
+    defaultSeverity: settings.default_severity,
+    autoAssignTeam: settings.auto_assign_team,
+    notifyOnCritical: settings.notify_on_critical,
+    notifyOnHigh: settings.notify_on_high,
+    allowSuppress: settings.allow_suppress,
+    retentionDays: settings.retention_days,
+    tagDefaults: settings.tag_defaults,
+    enrichGeo: settings.enrich_geo,
+    enrichThreatIntel: settings.enrich_threat_intel,
+    allowExternalSharing: settings.allow_external_sharing,
+  };
+}
 
-type CustomerSettingsMap = Record<number, CustomerSettings>;
+function toApi(settings: CustomerSettings): Omit<CustomerSettingsApi, "created_at" | "updated_at"> {
+  return {
+    tier: settings.tier as CustomerSettingsApi["tier"],
+    timezone: settings.timezone.trim(),
+    sla_target: settings.slaTarget.trim(),
+    primary_contact: settings.primaryContact.trim(),
+    contact_email: settings.contactEmail.trim(),
+    contact_phone: settings.contactPhone.trim(),
+    notify_channels: settings.notifyChannels.trim(),
+    escalation_matrix: settings.escalationMatrix.trim(),
+    maintenance_window: settings.maintenanceWindow.trim(),
+    default_severity: settings.defaultSeverity as CustomerSettingsApi["default_severity"],
+    auto_assign_team: settings.autoAssignTeam.trim(),
+    notify_on_critical: settings.notifyOnCritical,
+    notify_on_high: settings.notifyOnHigh,
+    allow_suppress: settings.allowSuppress,
+    retention_days: settings.retentionDays,
+    tag_defaults: settings.tagDefaults.trim(),
+    enrich_geo: settings.enrichGeo,
+    enrich_threat_intel: settings.enrichThreatIntel,
+    allow_external_sharing: settings.allowExternalSharing,
+  };
+}
 
-const defaultSettings: CustomerSettings = {
-  tier: "Gold",
-  timezone: "Europe/Rome",
-  slaTarget: "15m",
-  primaryContact: "SOC Lead",
-  contactEmail: "soc@example.com",
-  contactPhone: "+39 000 000 000",
-  notifyChannels: "Email, Slack, PagerDuty",
-  escalationMatrix: "L1 -> L2 -> L3",
-  maintenanceWindow: "Sunday 02:00 - 03:00",
-  defaultSeverity: "medium",
-  autoAssignTeam: "SOC L1",
-  notifyOnCritical: true,
-  notifyOnHigh: true,
-  allowSuppress: true,
-  retentionDays: 365,
-  tagDefaults: "customer, socview",
-  enrichGeo: true,
-  enrichThreatIntel: true,
-  allowExternalSharing: false,
-};
-
-function loadCustomerSettingsMap(): CustomerSettingsMap {
-  try {
-    const raw = localStorage.getItem(settingsStorageKey);
-    if (!raw) return {};
-    return JSON.parse(raw) as CustomerSettingsMap;
-  } catch {
-    return {};
+function validateSettings(settings: CustomerSettings): Partial<Record<keyof CustomerSettings, string>> {
+  const errors: Partial<Record<keyof CustomerSettings, string>> = {};
+  if (!settings.tier.trim()) {
+    errors.tier = "Tier obbligatorio.";
   }
+  if (!settings.timezone.trim()) {
+    errors.timezone = "Timezone obbligatoria.";
+  }
+  if (!settings.slaTarget.trim()) {
+    errors.slaTarget = "SLA target obbligatorio.";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.contactEmail.trim())) {
+    errors.contactEmail = "Email non valida.";
+  }
+  if (!Number.isFinite(settings.retentionDays) || settings.retentionDays < 1 || settings.retentionDays > 3650) {
+    errors.retentionDays = "Retention deve essere tra 1 e 3650 giorni.";
+  }
+  return errors;
 }
 
 export default function CustomerSettingsPage() {
@@ -93,17 +91,16 @@ export default function CustomerSettingsPage() {
   const { customerId } = useParams();
   const { customers, selectedCustomer, selectedCustomerId, setSelectedCustomerId } = useCustomer();
 
-  const [sources, setSources] = useState<GlobalSourceDefinition[]>(() => loadGlobalSourcesConfig());
-  const [preferences, setPreferences] = useState<CustomerSourcePreferences>(() => loadCustomerSourcePreferences());
-  const [message, setMessage] = useState<string | null>(null);
-  const [settingsMap, setSettingsMap] = useState<CustomerSettingsMap>(() => loadCustomerSettingsMap());
+  const [tab, setTab] = useState(0);
+  const [settings, setSettings] = useState<CustomerSettings>(defaultCustomerSettings);
+  const [sources, setSources] = useState<CustomerSourceCatalogEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [togglingSourceId, setTogglingSourceId] = useState<number | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof CustomerSettings, string>>>({});
 
   const routeCustomerId = Number(customerId ?? 0) || null;
-
-  useEffect(() => {
-    setSources(loadGlobalSourcesConfig());
-    setPreferences(loadCustomerSourcePreferences());
-  }, []);
 
   useEffect(() => {
     if (routeCustomerId && routeCustomerId !== selectedCustomerId) {
@@ -116,8 +113,10 @@ export default function CustomerSettingsPage() {
   }, [customers, routeCustomerId, selectedCustomerId, setSelectedCustomerId]);
 
   useEffect(() => {
-    localStorage.setItem(settingsStorageKey, JSON.stringify(settingsMap));
-  }, [settingsMap]);
+    if (selectedCustomerId && selectedCustomerId !== routeCustomerId) {
+      navigate(`/customers/${selectedCustomerId}/settings`, { replace: true });
+    }
+  }, [navigate, routeCustomerId, selectedCustomerId]);
 
   const activeCustomer = useMemo(() => {
     if (selectedCustomer) return selectedCustomer;
@@ -125,47 +124,83 @@ export default function CustomerSettingsPage() {
     return null;
   }, [customers, selectedCustomer, selectedCustomerId]);
 
-  const activeSettings = useMemo(() => {
-    if (!activeCustomer) return defaultSettings;
-    return (
-      settingsMap[activeCustomer.id] ?? {
-        ...defaultSettings,
-        contactEmail: `${activeCustomer.code.toLowerCase()}@example.com`,
-      }
-    );
-  }, [activeCustomer, settingsMap]);
+  const loadSettings = useCallback(async (customerIdToLoad: number) => {
+    setLoading(true);
+    try {
+      const response = await fetchCustomerSettings(customerIdToLoad);
+      setSettings(fromApi(response.settings));
+      setSources(response.sources);
+      setNotice(null);
+      setFieldErrors({});
+    } catch {
+      setNotice({ severity: "error", message: "Impossibile caricare impostazioni cliente." });
+      setSettings(defaultCustomerSettings);
+      setSources([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeCustomer) return;
+    void loadSettings(activeCustomer.id);
+  }, [activeCustomer, loadSettings]);
 
   const enabledCount = useMemo(() => {
-    if (!activeCustomer) return 0;
-    return sources.filter((source) => preferences[activeCustomer.id]?.[source.id] ?? true).length;
-  }, [activeCustomer, preferences, sources]);
+    return sources.filter((source) => source.customer_enabled).length;
+  }, [sources]);
 
   const updateSettings = (partial: Partial<CustomerSettings>) => {
-    if (!activeCustomer) return;
-    setSettingsMap((current) => ({
-      ...current,
-      [activeCustomer.id]: {
-        ...(current[activeCustomer.id] ?? defaultSettings),
-        ...partial,
-      },
-    }));
+    setSettings((current) => ({ ...current, ...partial }));
+    setFieldErrors((current) => {
+      const next = { ...current };
+      Object.keys(partial).forEach((key) => {
+        delete next[key as keyof CustomerSettings];
+      });
+      return next;
+    });
   };
 
-  const toggleSourceForCustomer = (sourceId: number, enabled: boolean) => {
+  const toggleSourceForCustomer = async (sourceId: number, enabled: boolean) => {
     if (!activeCustomer) return;
-    setPreferences((current) => ({
-      ...current,
-      [activeCustomer.id]: {
-        ...(current[activeCustomer.id] ?? {}),
-        [sourceId]: enabled,
-      },
-    }));
-    setMessage(null);
+    const previousSources = sources;
+    setTogglingSourceId(sourceId);
+    setSources((current) =>
+      current.map((item) => (item.source_id === sourceId ? { ...item, customer_enabled: enabled } : item)),
+    );
+    try {
+      const response = await updateCustomerSettings(activeCustomer.id, {
+        source_overrides: [{ source_id: sourceId, is_enabled: enabled }],
+      });
+      setSources(response.sources);
+      setNotice({ severity: "success", message: "Abilitazione fonte aggiornata." });
+    } catch {
+      setSources(previousSources);
+      setNotice({ severity: "error", message: "Impossibile aggiornare la fonte per il cliente." });
+    } finally {
+      setTogglingSourceId(null);
+    }
   };
 
-  const save = () => {
-    saveCustomerSourcePreferences(preferences);
-    setMessage("Impostazioni cliente salvate.");
+  const save = async () => {
+    if (!activeCustomer) return;
+    const errors = validateSettings(settings);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length) {
+      setNotice({ severity: "error", message: "Correggi i campi evidenziati prima di salvare." });
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await updateCustomerSettings(activeCustomer.id, { settings: toApi(settings) });
+      setSettings(fromApi(response.settings));
+      setSources(response.sources);
+      setNotice({ severity: "success", message: "Impostazioni cliente salvate con successo." });
+    } catch {
+      setNotice({ severity: "error", message: "Salvataggio impostazioni cliente non riuscito." });
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (!activeCustomer) {
@@ -173,185 +208,48 @@ export default function CustomerSettingsPage() {
   }
 
   return (
-    <Stack spacing={2}>
-      <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} spacing={1.5}>
-        <Box>
-          <Typography sx={{ color: "#f8fafc", fontSize: { xs: 26, md: 34 }, fontWeight: 700 }}>
-            Impostazioni Cliente
-          </Typography>
-          <Typography sx={{ color: "#64748b" }}>
-            Profilo, SLA, routing e abilitazioni fonti per il cliente selezionato.
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={1} flexWrap="wrap">
-          <TextField
-            select
-            size="small"
-            label="Cliente"
-            value={activeCustomer.id}
-            onChange={(event) => setSelectedCustomerId(Number(event.target.value))}
-            sx={{ minWidth: 220, "& .MuiOutlinedInput-root": { bgcolor: "rgba(15,23,42,0.86)", color: "#cbd5e1" } }}
-          >
-            {customers.map((customer) => (
-              <MenuItem key={customer.id} value={customer.id}>
-                {customer.name}
-              </MenuItem>
-            ))}
-          </TextField>
-          <Button variant="outlined" onClick={() => navigate(`/costumers/${activeCustomer.id}`)}>
-            Torna al cliente
-          </Button>
-          <Button variant="outlined" onClick={() => navigate("/sources")}>Gestisci fonti globali</Button>
-          <Button variant="contained" onClick={save}>Salva</Button>
-        </Stack>
-      </Stack>
+    <Stack spacing={2} sx={{ minHeight: "calc(100vh - 148px)" }}>
+      <CustomerSettingsHeader
+        customers={customers}
+        activeCustomerId={activeCustomer.id}
+        onSelectCustomer={setSelectedCustomerId}
+        onBack={() => navigate(`/customers/${activeCustomer.id}`)}
+        onManageSources={() => navigate("/sources")}
+        onSave={save}
+        saving={saving}
+      />
 
-      {message ? <Alert severity="success">{message}</Alert> : null}
+      {notice ? <Alert severity={notice.severity}>{notice.message}</Alert> : null}
+      {loading ? <Alert severity="info">Caricamento configurazioni cliente in corso...</Alert> : null}
 
-      <Stack direction="row" spacing={1} flexWrap="wrap">
-        <Chip size="small" label={`Cliente: ${activeCustomer.name}`} sx={{ color: "#93c5fd", border: "1px solid rgba(59,130,246,0.35)", background: "rgba(30,64,175,0.18)" }} />
-        <Chip size="small" label={`Fonti abilitate: ${enabledCount}/${sources.length}`} sx={{ color: "#86efac", border: "1px solid rgba(74,222,128,0.35)", background: "rgba(20,83,45,0.2)" }} />
-        <Chip size="small" label={`Tier: ${activeSettings.tier}`} sx={{ color: "#c4b5fd", border: "1px solid rgba(167,139,250,0.35)", background: "rgba(76,29,149,0.2)" }} />
-      </Stack>
+      <CustomerSummaryChips
+        customerName={activeCustomer.name}
+        enabledCount={enabledCount}
+        sourcesCount={sources.length}
+        tier={settings.tier}
+      />
 
-      <Grid container spacing={2}>
-        <Grid item xs={12} md={6}>
-          <Card sx={{ borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))" }}>
-            <CardContent>
-              <Typography sx={{ color: "#e2e8f0", fontWeight: 700, mb: 1 }}>Profilo & Contatti</Typography>
-              <Divider sx={{ mb: 2, borderColor: "rgba(148,163,184,0.2)" }} />
-              <Stack spacing={1.2}>
-                <TextField label="Tier" value={activeSettings.tier} onChange={(event) => updateSettings({ tier: event.target.value })} />
-                <TextField label="Timezone" value={activeSettings.timezone} onChange={(event) => updateSettings({ timezone: event.target.value })} />
-                <TextField label="SLA target" value={activeSettings.slaTarget} onChange={(event) => updateSettings({ slaTarget: event.target.value })} />
-                <TextField label="Primary contact" value={activeSettings.primaryContact} onChange={(event) => updateSettings({ primaryContact: event.target.value })} />
-                <TextField label="Email" value={activeSettings.contactEmail} onChange={(event) => updateSettings({ contactEmail: event.target.value })} />
-                <TextField label="Phone" value={activeSettings.contactPhone} onChange={(event) => updateSettings({ contactPhone: event.target.value })} />
-              </Stack>
-            </CardContent>
-          </Card>
-        </Grid>
+      <Tabs value={tab} onChange={(_, value) => setTab(value)} textColor="inherit" indicatorColor="primary">
+        <Tab label="Profilo Cliente" />
+        <Tab label="Policy Allarmi" />
+        <Tab label="Fonti abilitate" />
+      </Tabs>
 
-        <Grid item xs={12} md={6}>
-          <Card sx={{ borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))" }}>
-            <CardContent>
-              <Typography sx={{ color: "#e2e8f0", fontWeight: 700, mb: 1 }}>Routing & Notifiche</Typography>
-              <Divider sx={{ mb: 2, borderColor: "rgba(148,163,184,0.2)" }} />
-              <Stack spacing={1.2}>
-                <TextField label="Team assegnazione" value={activeSettings.autoAssignTeam} onChange={(event) => updateSettings({ autoAssignTeam: event.target.value })} />
-                <TextField label="Canali notifiche" value={activeSettings.notifyChannels} onChange={(event) => updateSettings({ notifyChannels: event.target.value })} />
-                <TextField label="Escalation matrix" value={activeSettings.escalationMatrix} onChange={(event) => updateSettings({ escalationMatrix: event.target.value })} />
-                <TextField label="Maintenance window" value={activeSettings.maintenanceWindow} onChange={(event) => updateSettings({ maintenanceWindow: event.target.value })} />
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography sx={{ color: "#e2e8f0" }}>Notify critical</Typography>
-                  <Switch checked={activeSettings.notifyOnCritical} onChange={(event) => updateSettings({ notifyOnCritical: event.target.checked })} />
-                </Stack>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography sx={{ color: "#e2e8f0" }}>Notify high</Typography>
-                  <Switch checked={activeSettings.notifyOnHigh} onChange={(event) => updateSettings({ notifyOnHigh: event.target.checked })} />
-                </Stack>
-              </Stack>
-            </CardContent>
-          </Card>
-        </Grid>
+      <TabPanel value={tab} index={0}>
+        <CustomerProfileCard settings={settings} onChange={updateSettings} errors={fieldErrors} />
+      </TabPanel>
 
-        <Grid item xs={12} md={6}>
-          <Card sx={{ borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))" }}>
-            <CardContent>
-              <Typography sx={{ color: "#e2e8f0", fontWeight: 700, mb: 1 }}>Policy allarmi</Typography>
-              <Divider sx={{ mb: 2, borderColor: "rgba(148,163,184,0.2)" }} />
-              <Stack spacing={1.2}>
-                <TextField
-                  select
-                  label="Default severity"
-                  value={activeSettings.defaultSeverity}
-                  onChange={(event) => updateSettings({ defaultSeverity: event.target.value })}
-                >
-                  {[
-                    "critical",
-                    "high",
-                    "medium",
-                    "low",
-                  ].map((item) => (
-                    <MenuItem key={item} value={item}>{item}</MenuItem>
-                  ))}
-                </TextField>
-                <TextField label="Tag predefiniti" value={activeSettings.tagDefaults} onChange={(event) => updateSettings({ tagDefaults: event.target.value })} />
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography sx={{ color: "#e2e8f0" }}>Consenti soppressione</Typography>
-                  <Switch checked={activeSettings.allowSuppress} onChange={(event) => updateSettings({ allowSuppress: event.target.checked })} />
-                </Stack>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography sx={{ color: "#e2e8f0" }}>Enrichment GEO</Typography>
-                  <Switch checked={activeSettings.enrichGeo} onChange={(event) => updateSettings({ enrichGeo: event.target.checked })} />
-                </Stack>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography sx={{ color: "#e2e8f0" }}>Enrichment Threat Intel</Typography>
-                  <Switch checked={activeSettings.enrichThreatIntel} onChange={(event) => updateSettings({ enrichThreatIntel: event.target.checked })} />
-                </Stack>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography sx={{ color: "#e2e8f0" }}>Condivisione esterna</Typography>
-                  <Switch checked={activeSettings.allowExternalSharing} onChange={(event) => updateSettings({ allowExternalSharing: event.target.checked })} />
-                </Stack>
-              </Stack>
-            </CardContent>
-          </Card>
-        </Grid>
+      <TabPanel value={tab} index={1}>
+        <CustomerAlarmPolicyCard settings={settings} onChange={updateSettings} />
+      </TabPanel>
 
-        <Grid item xs={12} md={6}>
-          <Card sx={{ borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))" }}>
-            <CardContent>
-              <Typography sx={{ color: "#e2e8f0", fontWeight: 700, mb: 1 }}>Retention & Compliance</Typography>
-              <Divider sx={{ mb: 2, borderColor: "rgba(148,163,184,0.2)" }} />
-              <Stack spacing={1.2}>
-                <TextField
-                  label="Retention (days)"
-                  type="number"
-                  value={activeSettings.retentionDays}
-                  onChange={(event) => updateSettings({ retentionDays: Number(event.target.value) })}
-                />
-              </Stack>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      <Card sx={{ borderRadius: 3, border: "1px solid rgba(148,163,184,0.24)", background: "linear-gradient(180deg, rgba(15,23,42,0.88), rgba(15,23,42,0.72))" }}>
-        <CardContent>
-          <Typography sx={{ color: "#e2e8f0", fontWeight: 700, mb: 1.2 }}>Abilitazioni Fonti per Cliente</Typography>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ color: "#94a3b8" }}>Fonte</TableCell>
-                <TableCell sx={{ color: "#94a3b8" }}>Metodo</TableCell>
-                <TableCell sx={{ color: "#94a3b8" }}>Endpoint</TableCell>
-                <TableCell sx={{ color: "#94a3b8" }}>Parser</TableCell>
-                <TableCell sx={{ color: "#94a3b8" }}>Tipi allarme</TableCell>
-                <TableCell sx={{ color: "#94a3b8" }}>Abilitata per cliente</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {sources.map((source) => {
-                const enabled = preferences[activeCustomer.id]?.[source.id] ?? true;
-                return (
-                  <TableRow key={source.id}>
-                    <TableCell sx={{ color: "#e2e8f0" }}>{source.name}</TableCell>
-                    <TableCell sx={{ color: "#cbd5e1" }}>{source.method}</TableCell>
-                    <TableCell sx={{ color: "#94a3b8", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {source.endpoint}
-                    </TableCell>
-                    <TableCell sx={{ color: "#c4b5fd" }}>{source.parserEntries.length}</TableCell>
-                    <TableCell sx={{ color: "#fcd34d" }}>{source.alertTypeRules.length}</TableCell>
-                    <TableCell>
-                      <Switch checked={enabled} onChange={(event) => toggleSourceForCustomer(source.id, event.target.checked)} />
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <TabPanel value={tab} index={2}>
+        <CustomerSourcesTable
+          sources={sources}
+          onToggle={toggleSourceForCustomer}
+          loading={loading || saving || togglingSourceId !== null}
+        />
+      </TabPanel>
     </Stack>
   );
 }

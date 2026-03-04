@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, sessionMessage, clearSessionMessage } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [username, setUsername] = useState("admin");
@@ -19,6 +19,7 @@ export default function LoginPage() {
     event.preventDefault();
     setSubmitting(true);
     setError(null);
+    clearSessionMessage();
 
     try {
       await login(username, password);
@@ -42,6 +43,7 @@ export default function LoginPage() {
 
         <Box component="form" onSubmit={handleSubmit}>
           <Stack spacing={2}>
+            {sessionMessage ? <Alert severity="warning">{sessionMessage}</Alert> : null}
             {error ? <Alert severity="error">{error}</Alert> : null}
             <TextField
               label="Username"

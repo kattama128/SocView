@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
@@ -17,6 +18,7 @@ from tenant_data.models import (
     IngestionEventLog,
     IngestionRun,
     SourceConfig,
+    SourceAlertTypeRule,
     Source,
     Tag,
 )
@@ -49,6 +51,56 @@ def _determine_title(raw_event, source):
             if value:
                 return str(value)[:255]
     return f"Event from {source.name}"[:255]
+
+
+def _find_alert_type_rule(source, title):
+    if not title:
+        return None
+    rules = list(source.alert_type_rules.filter(is_enabled=True))
+    exact_rules = [rule for rule in rules if rule.match_mode == SourceAlertTypeRule.MatchMode.EXACT]
+    contains_rules = [rule for rule in rules if rule.match_mode == SourceAlertTypeRule.MatchMode.CONTAINS]
+    regex_rules = [rule for rule in rules if rule.match_mode == SourceAlertTypeRule.MatchMode.REGEX]
+
+    lowered = title.lower()
+    for rule in exact_rules:
+        if lowered == rule.alert_name.lower():
+            return rule
+    for rule in contains_rules:
+        if rule.alert_name and rule.alert_name.lower() in lowered:
+            return rule
+    for rule in regex_rules:
+        if not rule.alert_name:
+            continue
+        try:
+            if re.search(rule.alert_name, title, flags=re.IGNORECASE):
+                return rule
+        except re.error:
+            # Ignore invalid custom regex and continue.
+            continue
+    return None
+
+
+def _resolve_alert_severity(source, title, fallback_severity, event_timestamp):
+    rule = _find_alert_type_rule(source, title)
+    if rule is None:
+        rule, _ = SourceAlertTypeRule.objects.get_or_create(
+            source=source,
+            alert_name=title,
+            match_mode=SourceAlertTypeRule.MatchMode.EXACT,
+            defaults={
+                "severity": fallback_severity,
+                "is_enabled": True,
+            },
+        )
+
+    rule.received_count += 1
+    if rule.last_seen_at is None or event_timestamp > rule.last_seen_at:
+        rule.last_seen_at = event_timestamp
+    rule.save(update_fields=["received_count", "last_seen_at", "updated_at"])
+
+    if rule.is_enabled:
+        return rule.severity
+    return fallback_severity
 
 
 def _determine_source_id(raw_event, source):
@@ -96,13 +148,15 @@ def test_source_connection(source):
         return test_rest_connection(source)
     if source.type == Source.Type.WEBHOOK:
         return {"ok": True, "detail": "Webhook pronto"}
-    return {"ok": False, "detail": "Tipo fonte sconosciuto"}
+    return {"ok": False, "detail": f"Test connessione non supportato per tipo {source.type}"}
 
 
 def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pushed_events=None):
     source_config, _ = SourceConfig.objects.get_or_create(source=source)
+    source_customer = getattr(source, "customer", None)
     summary = IngestionSummary()
     run = IngestionRun.objects.create(
+        customer=source_customer,
         source=source,
         trigger=trigger,
         status=IngestionRun.Status.RUNNING,
@@ -136,16 +190,20 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
 
             try:
                 fingerprint = compute_fingerprint(source, policy, raw_event, parsed_event)
-                severity = map_severity(source, raw_event, parsed_event)
+                mapped_severity = map_severity(source, raw_event, parsed_event)
                 event_timestamp = parse_event_timestamp(raw_event, parsed_event)
+                title = _determine_title(raw_event, source)
+                severity = _resolve_alert_severity(source, title, mapped_severity, event_timestamp)
                 source_id = _determine_source_id(raw_event, source)
 
                 with transaction.atomic():
                     alert, created = Alert.objects.get_or_create(
+                        customer=source_customer,
                         dedup_fingerprint=fingerprint,
                         source_name=source.name,
                         defaults={
-                            "title": _determine_title(raw_event, source),
+                            "title": title,
+                            "customer": source_customer,
                             "severity": severity,
                             "event_timestamp": event_timestamp,
                             "source_name": source.name,
@@ -184,6 +242,7 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
                             occurrence.save(update_fields=["count", "first_seen", "last_seen", "updated_at"])
 
                         alert.source_id = source_id
+                        alert.title = title
                         alert.raw_payload = raw_event if isinstance(raw_event, dict) else {"value": str(raw_event)}
                         alert.parsed_payload = parsed_event if isinstance(parsed_event, dict) else None
                         alert.parsed_field_schema = field_schema
@@ -193,6 +252,7 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
                         alert.save(
                             update_fields=[
                                 "source_id",
+                                "title",
                                 "raw_payload",
                                 "parsed_payload",
                                 "parsed_field_schema",

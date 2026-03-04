@@ -25,6 +25,7 @@ import {
   addComment,
   assignAlert,
   changeAlertState,
+  downloadAttachment,
   fetchAlert,
   fetchAlertStates,
   fetchAuditLogs,
@@ -62,7 +63,7 @@ export default function AlertDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const writable = canWriteAlerts(user?.role);
+  const writable = canWriteAlerts(user?.role, user?.permissions);
 
   const loadData = async () => {
     if (!alertId) {
@@ -118,6 +119,28 @@ export default function AlertDetailPage() {
       setSuccess(successMessage);
     } catch {
       setError("Operazione non completata.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAttachmentDownload = async (attachmentId: number, filename: string) => {
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const blob = await downloadAttachment(attachmentId);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename || `attachment-${attachmentId}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setSuccess(`Download avviato: ${filename}`);
+    } catch {
+      setError("Impossibile scaricare allegato.");
     } finally {
       setBusy(false);
     }
@@ -397,11 +420,17 @@ export default function AlertDetailPage() {
           <Stack spacing={1} sx={{ mt: 1 }}>
             {(alertData.attachments ?? []).map((attachment) => (
               <Box key={attachment.id} sx={{ p: 1.2, bgcolor: "#f8f9fa", borderRadius: 1 }}>
-                <Typography variant="body2">
-                  <a href={attachment.file_url} target="_blank" rel="noreferrer">
-                    {attachment.filename}
-                  </a>
-                </Typography>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                  <Typography variant="body2">{attachment.filename}</Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={busy}
+                    onClick={() => void handleAttachmentDownload(attachment.id, attachment.filename)}
+                  >
+                    Download
+                  </Button>
+                </Stack>
                 <Typography variant="caption" color="text.secondary">
                   {(attachment.size / 1024).toFixed(1)} KB - {attachment.uploaded_by_detail?.username ?? "sconosciuto"}
                 </Typography>

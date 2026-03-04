@@ -3,9 +3,14 @@ import {
   Alert,
   AlertState,
   Attachment,
+  AlertDetailFieldConfig,
   AlertTimelineEvent,
   AuditLog,
   CommentNote,
+  CustomerSettingsResponse,
+  CustomerSettingsUpdatePayload,
+  CustomerOverview,
+  CustomerSummary,
   NotificationListResponse,
   SavedSearch,
   SearchRequest,
@@ -32,14 +37,70 @@ export async function fetchAlerts(filters: AlertFilters = {}): Promise<Alert[]> 
   return response.data.results ?? [];
 }
 
-export async function searchAlerts(payload: SearchRequest): Promise<SearchResponse> {
-  const response = await api.post<SearchResponse>("/alerts/search/", payload);
+export async function fetchCustomers(isEnabled = true): Promise<CustomerSummary[]> {
+  const response = await api.get<CustomerSummary[]>("/alerts/customers/", {
+    params: { is_enabled: isEnabled ? "true" : undefined },
+  });
   return response.data;
 }
 
-export async function fetchSourceFieldSchemas(sourceName?: string): Promise<SourceFieldSchema[]> {
+export async function fetchCustomersOverview(ordering = "name", isEnabled = true): Promise<CustomerOverview[]> {
+  const response = await api.get<CustomerOverview[]>("/alerts/customers/overview/", {
+    params: {
+      ordering,
+      is_enabled: isEnabled ? "true" : undefined,
+    },
+  });
+  return response.data;
+}
+
+export async function fetchCustomerSettings(customerId: number): Promise<CustomerSettingsResponse> {
+  const response = await api.get<CustomerSettingsResponse>(`/alerts/customers/${customerId}/settings/`);
+  return response.data;
+}
+
+export async function updateCustomerSettings(
+  customerId: number,
+  payload: CustomerSettingsUpdatePayload,
+): Promise<CustomerSettingsResponse> {
+  const response = await api.patch<CustomerSettingsResponse>(`/alerts/customers/${customerId}/settings/`, payload);
+  return response.data;
+}
+
+export async function searchAlerts(payload: SearchRequest, customerId?: number | null): Promise<SearchResponse> {
+  const response = await api.post<SearchResponse>("/alerts/search/", payload, {
+    params: customerId ? { customer_id: customerId } : undefined,
+  });
+  return response.data;
+}
+
+export async function fetchSourceFieldSchemas(sourceName?: string, customerId?: number | null): Promise<SourceFieldSchema[]> {
   const response = await api.get<SourceFieldSchema[]>("/alerts/field-schemas/", {
-    params: sourceName ? { source_name: sourceName } : undefined,
+    params: {
+      ...(sourceName ? { source_name: sourceName } : {}),
+      ...(customerId ? { customer_id: customerId } : {}),
+    },
+  });
+  return response.data;
+}
+
+export async function fetchAlertDetailFieldConfigs(customerId?: number | null): Promise<AlertDetailFieldConfig[]> {
+  const response = await api.get<AlertDetailFieldConfig[]>("/alerts/detail-field-configs/", {
+    params: customerId ? { customer_id: customerId } : undefined,
+  });
+  return response.data;
+}
+
+export async function setAlertDetailFieldConfig(
+  payload: {
+    source_name: string;
+    alert_type: string;
+    visible_fields: string[];
+  },
+  customerId?: number | null,
+): Promise<AlertDetailFieldConfig> {
+  const response = await api.put<AlertDetailFieldConfig>("/alerts/detail-field-configs/set/", payload, {
+    params: customerId ? { customer_id: customerId } : undefined,
   });
   return response.data;
 }
@@ -82,7 +143,7 @@ export async function fetchTags(): Promise<Tag[]> {
 }
 
 export async function fetchUsers(): Promise<UserSummary[]> {
-  const response = await api.get<UserSummary[]>("/auth/users/");
+  const response = await api.get<UserSummary[]>("/auth/users/assignable/");
   return response.data;
 }
 
@@ -125,6 +186,13 @@ export async function uploadAttachment(alertId: string, file: File): Promise<Att
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
+}
+
+export async function downloadAttachment(attachmentId: number): Promise<Blob> {
+  const response = await api.get(`/alerts/attachments/${attachmentId}/download/`, {
+    responseType: "blob",
+  });
+  return response.data as Blob;
 }
 
 export async function fetchAlertTimeline(alertId: string): Promise<AlertTimelineEvent[]> {

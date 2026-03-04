@@ -5,16 +5,25 @@ import {
   DashboardWidgetsPayload,
 } from "../types/dashboard";
 
-export async function fetchDashboardWidgets(): Promise<DashboardWidgetsPayload> {
-  const response = await api.get<DashboardWidgetsPayload>("/core/dashboard/widgets/");
+function customerParams(customerId?: number | null) {
+  return customerId ? { customer_id: customerId } : undefined;
+}
+
+export async function fetchDashboardWidgets(customerId?: number | null): Promise<DashboardWidgetsPayload> {
+  const response = await api.get<DashboardWidgetsPayload>("/core/dashboard/widgets/", {
+    params: customerParams(customerId),
+  });
   return response.data;
 }
 
 export async function updateDashboardWidgetsLayout(
   widgetsLayout: DashboardWidgetLayoutItem[],
+  customerId?: number | null,
 ): Promise<DashboardWidgetsPayload> {
   const response = await api.put<DashboardWidgetsPayload>("/core/dashboard/widgets/", {
     widgets_layout: widgetsLayout,
+  }, {
+    params: customerParams(customerId),
   });
   return response.data;
 }

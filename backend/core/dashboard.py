@@ -45,13 +45,33 @@ def _load_alert_model():
     return Alert
 
 
-def _widget_alert_trend():
+def _alerts_queryset(customer_id=None, allowed_customer_ids=None):
     Alert = _load_alert_model()
+    queryset = Alert.objects.all()
+    if allowed_customer_ids is not None:
+        if not allowed_customer_ids:
+            return queryset.none()
+        queryset = queryset.filter(customer_id__in=allowed_customer_ids)
+    if customer_id is not None:
+        from tenant_data.customer_scoping import get_enabled_source_names_for_customer
+
+        queryset = queryset.filter(customer_id=customer_id)
+        enabled_source_names = get_enabled_source_names_for_customer(customer_id)
+        if enabled_source_names is not None:
+            if enabled_source_names:
+                queryset = queryset.filter(source_name__in=enabled_source_names)
+            else:
+                queryset = queryset.none()
+    return queryset
+
+
+def _widget_alert_trend(customer_id=None, allowed_customer_ids=None):
     end_date = timezone.now().date()
     start_date = end_date - timezone.timedelta(days=6)
 
     rows = (
-        Alert.objects.filter(event_timestamp__date__gte=start_date, event_timestamp__date__lte=end_date)
+        _alerts_queryset(customer_id=customer_id, allowed_customer_ids=allowed_customer_ids)
+        .filter(event_timestamp__date__gte=start_date, event_timestamp__date__lte=end_date)
         .annotate(day=TruncDate("event_timestamp"))
         .values("day")
         .annotate(count=Count("id"))
@@ -67,20 +87,20 @@ def _widget_alert_trend():
     return {"points": points}
 
 
-def _widget_top_sources(limit=5):
-    Alert = _load_alert_model()
+def _widget_top_sources(limit=5, customer_id=None, allowed_customer_ids=None):
     rows = (
-        Alert.objects.values("source_name")
+        _alerts_queryset(customer_id=customer_id, allowed_customer_ids=allowed_customer_ids)
+        .values("source_name")
         .annotate(count=Count("id"))
         .order_by("-count", "source_name")[:limit]
     )
     return {"items": [{"source_name": item["source_name"], "count": item["count"]} for item in rows]}
 
 
-def _widget_state_distribution():
-    Alert = _load_alert_model()
+def _widget_state_distribution(customer_id=None, allowed_customer_ids=None):
     rows = (
-        Alert.objects.select_related("current_state")
+        _alerts_queryset(customer_id=customer_id, allowed_customer_ids=allowed_customer_ids)
+        .select_related("current_state")
         .values("current_state__name")
         .annotate(count=Count("id"))
         .order_by("-count", "current_state__name")
@@ -93,20 +113,20 @@ def _widget_state_distribution():
     }
 
 
-def build_widget_data(widget_key):
+def build_widget_data(widget_key, customer_id=None, allowed_customer_ids=None):
     try:
         if widget_key == "alert_trend":
-            return _widget_alert_trend()
+            return _widget_alert_trend(customer_id=customer_id, allowed_customer_ids=allowed_customer_ids)
         if widget_key == "top_sources":
-            return _widget_top_sources()
+            return _widget_top_sources(customer_id=customer_id, allowed_customer_ids=allowed_customer_ids)
         if widget_key == "state_distribution":
-            return _widget_state_distribution()
+            return _widget_state_distribution(customer_id=customer_id, allowed_customer_ids=allowed_customer_ids)
     except (ProgrammingError, OperationalError):
         return {"items": [], "points": []}
     return {}
 
 
-def build_dashboard_payload(user):
+def build_dashboard_payload(user, customer_id=None, allowed_customer_ids=None):
     preference = get_dashboard_preference(user)
     layout = preference.widgets_layout or list(DEFAULT_WIDGET_LAYOUT)
 
@@ -123,7 +143,7 @@ def build_dashboard_payload(user):
                 "description": metadata["description"],
                 "enabled": bool(widget.get("enabled", True)),
                 "order": int(widget.get("order", 0)),
-                "data": build_widget_data(key),
+                "data": build_widget_data(key, customer_id=customer_id, allowed_customer_ids=allowed_customer_ids),
             }
         )
 

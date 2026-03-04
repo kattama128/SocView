@@ -13,6 +13,7 @@ from django.utils.timezone import now
 from django.db import connection
 from django.contrib.postgres.search import SearchQuery, SearchVector
 
+from tenant_data.customer_scoping import get_enabled_source_names_for_customer
 from tenant_data.models import Alert
 
 
@@ -22,6 +23,10 @@ ALLOWED_ORDERINGS = {
     "id",
     "title",
     "severity",
+    "source_name",
+    "source_id",
+    "customer_id",
+    "current_state_id",
     "event_timestamp",
     "created_at",
     "updated_at",
@@ -198,10 +203,19 @@ def flatten_payload(payload: Any, prefix: str = "") -> list[tuple[str, Any]]:
 
 @dataclass
 class SearchRequest:
+    customer_id: int | None = None
+    allowed_customer_ids: list[int] | None = None
     text: str = ""
     source_name: str = ""
+    source_names: list[str] | None = None
     state_id: int | None = None
+    state_ids: list[int] | None = None
     severity: str = ""
+    severities: list[str] | None = None
+    alert_types: list[str] | None = None
+    tag_ids: list[int] | None = None
+    event_timestamp_from: datetime | None = None
+    event_timestamp_to: datetime | None = None
     is_active: bool | None = None
     dynamic_filters: list[dict[str, Any]] | None = None
     ordering: str = "-event_timestamp"
@@ -241,14 +255,49 @@ class PostgresSearchBackend(BaseSearchBackend):
     name = "postgres"
 
     def _apply_core_filters(self, queryset, request_data: SearchRequest):
+        if request_data.allowed_customer_ids is not None:
+            if not request_data.allowed_customer_ids:
+                return queryset.none()
+            queryset = queryset.filter(customer_id__in=request_data.allowed_customer_ids)
+
+        if request_data.customer_id is not None:
+            queryset = queryset.filter(customer_id=request_data.customer_id)
+            enabled_source_names = get_enabled_source_names_for_customer(request_data.customer_id)
+            if enabled_source_names is not None:
+                if enabled_source_names:
+                    queryset = queryset.filter(source_name__in=enabled_source_names)
+                else:
+                    return queryset.none()
+
+        source_names = set(request_data.source_names or [])
         if request_data.source_name:
-            queryset = queryset.filter(source_name=request_data.source_name)
+            source_names.add(request_data.source_name)
+        if source_names:
+            queryset = queryset.filter(source_name__in=source_names)
 
+        state_ids = set(request_data.state_ids or [])
         if request_data.state_id:
-            queryset = queryset.filter(current_state_id=request_data.state_id)
+            state_ids.add(request_data.state_id)
+        if state_ids:
+            queryset = queryset.filter(current_state_id__in=state_ids)
 
+        severities = set(request_data.severities or [])
         if request_data.severity:
-            queryset = queryset.filter(severity=request_data.severity)
+            severities.add(request_data.severity)
+        if severities:
+            queryset = queryset.filter(severity__in=severities)
+
+        if request_data.alert_types:
+            queryset = queryset.filter(title__in=request_data.alert_types)
+
+        if request_data.tag_ids:
+            queryset = queryset.filter(alert_tags__tag_id__in=request_data.tag_ids).distinct()
+
+        if request_data.event_timestamp_from:
+            queryset = queryset.filter(event_timestamp__gte=request_data.event_timestamp_from)
+
+        if request_data.event_timestamp_to:
+            queryset = queryset.filter(event_timestamp__lte=request_data.event_timestamp_to)
 
         if request_data.is_active is not None:
             queryset = queryset.filter(current_state__is_final=(request_data.is_active is False))
@@ -259,12 +308,16 @@ class PostgresSearchBackend(BaseSearchBackend):
                 try:
                     vector = (
                         SearchVector("title", weight="A")
+                        + SearchVector("customer__name", weight="A")
+                        + SearchVector("customer__code", weight="A")
                         + SearchVector("source_name", weight="B")
                         + SearchVector(Cast("raw_payload", output_field=TextField()), weight="C")
                         + SearchVector(Cast("parsed_payload", output_field=TextField()), weight="C")
                     )
                     queryset = queryset.annotate(search_document=vector).filter(
-                        search_document=SearchQuery(text_value, search_type="websearch")
+                        Q(search_document=SearchQuery(text_value, search_type="websearch"))
+                        | Q(customer__name__icontains=text_value)
+                        | Q(customer__code__icontains=text_value)
                     )
                 except Exception:
                     queryset = queryset.annotate(
@@ -272,6 +325,8 @@ class PostgresSearchBackend(BaseSearchBackend):
                         parsed_payload_text=Cast("parsed_payload", output_field=TextField()),
                     ).filter(
                         Q(title__icontains=text_value)
+                        | Q(customer__name__icontains=text_value)
+                        | Q(customer__code__icontains=text_value)
                         | Q(source_name__icontains=text_value)
                         | Q(source_id__icontains=text_value)
                         | Q(dedup_fingerprint__icontains=text_value)
@@ -418,6 +473,9 @@ class ElasticSearchBackend(BaseSearchBackend):
                     "event_timestamp": {"type": "date"},
                     "created_at": {"type": "date"},
                     "updated_at": {"type": "date"},
+                    "customer_id": {"type": "integer"},
+                    "customer_name": {"type": "text"},
+                    "customer_code": {"type": "text"},
                     "source_name": {"type": "keyword"},
                     "source_id": {"type": "keyword"},
                     "current_state_id": {"type": "integer"},
@@ -449,6 +507,9 @@ class ElasticSearchBackend(BaseSearchBackend):
             "event_timestamp": alert.event_timestamp.isoformat() if alert.event_timestamp else now().isoformat(),
             "created_at": alert.created_at.isoformat() if alert.created_at else now().isoformat(),
             "updated_at": alert.updated_at.isoformat() if alert.updated_at else now().isoformat(),
+            "customer_id": alert.customer_id,
+            "customer_name": alert.customer.name if alert.customer_id and alert.customer else "",
+            "customer_code": alert.customer.code if alert.customer_id and alert.customer else "",
             "source_name": alert.source_name,
             "source_id": alert.source_id,
             "current_state_id": alert.current_state_id,
@@ -512,6 +573,11 @@ class ElasticSearchBackend(BaseSearchBackend):
     def search(self, request_data: SearchRequest) -> SearchResult:
         self.ensure_index()
 
+        # Elastic mapping currently does not index alert tag ids with guaranteed freshness.
+        # Delegate to fallback Postgres backend when tag filters are requested.
+        if request_data.tag_ids:
+            raise RuntimeError("Elastic non supporta filtri tag_ids in modo affidabile")
+
         query_bool: dict[str, Any] = {"must": [], "filter": []}
         if request_data.text:
             query_bool["must"].append(
@@ -520,6 +586,8 @@ class ElasticSearchBackend(BaseSearchBackend):
                         "query": request_data.text,
                         "fields": [
                             "title^3",
+                            "customer_name^2",
+                            "customer_code^2",
                             "source_name^2",
                             "source_id",
                             "dedup_fingerprint",
@@ -531,12 +599,49 @@ class ElasticSearchBackend(BaseSearchBackend):
                 }
             )
 
+        source_names = set(request_data.source_names or [])
         if request_data.source_name:
-            query_bool["filter"].append({"term": {"source_name": request_data.source_name}})
+            source_names.add(request_data.source_name)
+        if source_names:
+            query_bool["filter"].append({"terms": {"source_name": list(source_names)}})
+        if request_data.allowed_customer_ids is not None:
+            if not request_data.allowed_customer_ids:
+                return SearchResult(alert_ids=[], total=0, backend=self.name)
+            query_bool["filter"].append({"terms": {"customer_id": list(request_data.allowed_customer_ids)}})
+        if request_data.customer_id is not None:
+            query_bool["filter"].append({"term": {"customer_id": request_data.customer_id}})
+            enabled_source_names = get_enabled_source_names_for_customer(request_data.customer_id)
+            if enabled_source_names is not None:
+                if enabled_source_names:
+                    query_bool["filter"].append({"terms": {"source_name": enabled_source_names}})
+                else:
+                    return SearchResult(alert_ids=[], total=0, backend=self.name)
+        state_ids = set(request_data.state_ids or [])
         if request_data.state_id:
-            query_bool["filter"].append({"term": {"current_state_id": request_data.state_id}})
+            state_ids.add(request_data.state_id)
+        if state_ids:
+            query_bool["filter"].append({"terms": {"current_state_id": list(state_ids)}})
+        severities = set(request_data.severities or [])
         if request_data.severity:
-            query_bool["filter"].append({"term": {"severity": request_data.severity}})
+            severities.add(request_data.severity)
+        if severities:
+            query_bool["filter"].append({"terms": {"severity": list(severities)}})
+        if request_data.alert_types:
+            query_bool["filter"].append(
+                {
+                    "bool": {
+                        "should": [{"match_phrase": {"title": value}} for value in request_data.alert_types],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
+        if request_data.event_timestamp_from or request_data.event_timestamp_to:
+            range_payload: dict[str, str] = {}
+            if request_data.event_timestamp_from:
+                range_payload["gte"] = request_data.event_timestamp_from.isoformat()
+            if request_data.event_timestamp_to:
+                range_payload["lte"] = request_data.event_timestamp_to.isoformat()
+            query_bool["filter"].append({"range": {"event_timestamp": range_payload}})
         if request_data.is_active is not None:
             query_bool["filter"].append({"term": {"is_active": request_data.is_active}})
 

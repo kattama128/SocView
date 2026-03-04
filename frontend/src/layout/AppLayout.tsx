@@ -48,6 +48,7 @@ type MenuItemLink = {
   label: string;
   icon: ReactElement;
   to: string;
+  disabled?: boolean;
 };
 
 export default function AppLayout() {
@@ -71,8 +72,8 @@ export default function AppLayout() {
       { label: "Dashboard", icon: <DashboardIcon />, to: "/" },
       { label: "Active Alarms", icon: <DomainIcon />, to: "/active-alarms" },
       { label: "Sources", icon: <StorageIcon />, to: "/sources" },
-      { label: "Costumers", icon: <GroupsIcon />, to: "/costumers" },
-      { label: "Reports", icon: <DescriptionIcon />, to: "/reports" },
+      { label: "Customers", icon: <GroupsIcon />, to: "/customers" },
+      { label: "Reports", icon: <DescriptionIcon />, to: "/reports", disabled: true },
       { label: "Management", icon: <SettingsIcon />, to: "/configurazione" },
     ],
     [],
@@ -144,8 +145,8 @@ export default function AppLayout() {
               borderRadius: 2.2,
               display: "grid",
               placeItems: "center",
-              background: "linear-gradient(160deg, #14b8a6, #0ea5e9)",
-              boxShadow: "0 10px 24px rgba(20,184,166,0.28)",
+              background: "linear-gradient(160deg, rgba(59,130,246,0.85), rgba(34,197,94,0.72))",
+              boxShadow: "0 10px 24px rgba(37,99,235,0.35)",
             }}
           >
             <ShieldOutlinedIcon fontSize="small" sx={{ color: "#e6fffb" }} />
@@ -175,26 +176,29 @@ export default function AppLayout() {
 
       <List sx={{ px: 1.4 }}>
         {items.map((item) => {
-          const selected = location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+          const selected = !item.disabled && (location.pathname === item.to || location.pathname.startsWith(`${item.to}/`));
           return (
             <ListItemButton
               key={item.to}
               component={Link}
               to={item.to}
+              disabled={item.disabled}
               onClick={() => setMobileDrawerOpen(false)}
               selected={selected}
               sx={{
                 mb: 0.6,
                 borderRadius: 2,
-                color: selected ? "#d9fff8" : "text.secondary",
-                border: `1px solid ${selected ? alpha(theme.palette.primary.main, 0.54) : "transparent"}`,
+                color: item.disabled ? "text.disabled" : selected ? theme.palette.primary.light : "text.secondary",
+                border: `1px solid ${selected ? alpha(theme.palette.primary.main, 0.4) : "transparent"}`,
                 background: selected
-                  ? "linear-gradient(100deg, rgba(20,184,166,0.22), rgba(14,165,233,0.14))"
-                  : "transparent",
+                  ? "linear-gradient(100deg, rgba(59,130,246,0.18), rgba(34,197,94,0.12))"
+                  : item.disabled
+                    ? alpha(theme.palette.common.white, 0.02)
+                    : "transparent",
                 "&:hover": {
                   background: selected
-                    ? "linear-gradient(100deg, rgba(20,184,166,0.26), rgba(14,165,233,0.16))"
-                    : alpha(theme.palette.common.white, 0.04),
+                    ? "linear-gradient(100deg, rgba(59,130,246,0.22), rgba(34,197,94,0.14))"
+                    : alpha(theme.palette.common.white, 0.03),
                 },
               }}
             >
@@ -205,6 +209,13 @@ export default function AppLayout() {
                   fontSize: 14,
                   fontWeight: selected ? 650 : 500,
                 }}
+                secondary={
+                  item.disabled ? (
+                    <Typography variant="caption" sx={{ color: "text.disabled" }}>
+                      Coming soon
+                    </Typography>
+                  ) : null
+                }
               />
             </ListItemButton>
           );
@@ -217,8 +228,8 @@ export default function AppLayout() {
         sx={{
           px: 2.4,
           py: 1.8,
-          borderTop: `1px solid ${alpha(theme.palette.divider, 0.6)}`,
-          background: alpha(theme.palette.common.black, 0.12),
+          borderTop: "1px solid var(--border-subtle)",
+          background: "rgba(10, 15, 24, 0.5)",
         }}
       >
         <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{user?.username}</Typography>
@@ -240,9 +251,10 @@ export default function AppLayout() {
         elevation={0}
         sx={{
           zIndex: (muiTheme) => muiTheme.zIndex.drawer + 1,
-          background: alpha(theme.palette.background.default, 0.74),
-          borderBottom: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+          background: "var(--surface-2)",
+          borderBottom: "1px solid var(--border-subtle)",
           backdropFilter: "blur(12px)",
+          boxShadow: "var(--shadow-2)",
           ml: { lg: `${sidebarWidth}px` },
           width: { lg: `calc(100% - ${sidebarWidth}px)` },
         }}
@@ -295,9 +307,9 @@ export default function AppLayout() {
             label={selectedCustomer ? `Cliente: ${selectedCustomer.code}` : "Cliente: ALL"}
             size="small"
             sx={{
-              color: theme.palette.info.light,
-              border: `1px solid ${alpha(theme.palette.info.main, 0.4)}`,
-              background: alpha(theme.palette.info.main, 0.14),
+              color: theme.palette.primary.light,
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.35)}`,
+              background: alpha(theme.palette.primary.main, 0.12),
             }}
           />
 
@@ -333,7 +345,7 @@ export default function AppLayout() {
           [`& .MuiDrawer-paper`]: {
             width: 390,
             p: 2,
-            borderLeft: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+            borderLeft: "1px solid var(--border-subtle)",
           },
         }}
       >
@@ -417,9 +429,11 @@ export default function AppLayout() {
           pt: { xs: 11, md: 12 },
           pb: 3,
           minHeight: "100vh",
+          maxHeight: "100vh",
+          overflow: "auto",
         }}
       >
-        <Box sx={{ width: "100%", maxWidth: 1660, mx: "auto" }}>
+        <Box sx={{ width: "100%", maxWidth: 1720, mx: "auto" }}>
           <Outlet />
         </Box>
       </Box>

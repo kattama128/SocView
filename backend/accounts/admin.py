@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from .models import User, UserDashboardPreference
+from .models import SecurityAuditEvent, User, UserDashboardPreference
 
 
 @admin.register(User)
@@ -14,3 +14,10 @@ class UserAdmin(DjangoUserAdmin):
 @admin.register(UserDashboardPreference)
 class UserDashboardPreferenceAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "updated_at")
+
+
+@admin.register(SecurityAuditEvent)
+class SecurityAuditEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "created_at", "actor", "action", "object_type", "object_id", "ip_address")
+    list_filter = ("action", "object_type")
+    search_fields = ("actor__username", "object_type", "object_id", "metadata")

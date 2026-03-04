@@ -85,6 +85,17 @@ Il seed crea/aggiorna:
 - SOC Analyst: `analyst` / `Analyst123!`
 - ReadOnly: `readonly` / `ReadOnly123!`
 
+## RBAC enterprise (nuovo)
+
+- Permessi granulari: `view`, `triage`, `manage_sources`, `manage_customers`, `manage_users`, `export`, `admin`.
+- Scope per cliente via membership `tenant_data.CustomerMembership` (`viewer`, `triage`, `manager`).
+- Enforcement applicato agli endpoint dati (`/api/alerts/*`, `/api/ingestion/*`, `/api/core/dashboard/widgets/`).
+- Operazioni sensibili utenti/membership tracciate in `accounts.SecurityAuditEvent`.
+
+Matrice completa ruoli/permessi:
+
+- [`docs/rbac-permission-matrix.md`](docs/rbac-permission-matrix.md)
+
 ## Comandi run/test/export demo
 
 Run stack:
@@ -103,6 +114,51 @@ Build frontend:
 
 ```bash
 docker compose exec frontend npm run build
+```
+
+Quality gates frontend (host):
+
+```bash
+cd frontend
+npm ci
+npm run lint
+npm run test
+npm run build
+```
+
+Smoke UI reale (Playwright):
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run qa:session
+npm run qa:dashboard
+```
+
+Disk cleanup sicuro (preserva i dati DB/media in uso):
+
+```bash
+# artefatti rigenerabili frontend
+rm -rf frontend/node_modules frontend/dist
+
+# cache browser Playwright (rigenerabile con `npx playwright install chromium`)
+rm -rf "$HOME/Library/Caches/ms-playwright"
+
+# cache build Docker non usata
+docker builder prune -af
+
+# eventuali immagini dangling
+docker image prune -f
+
+# ricostruzione rapida stack
+docker compose up -d --build
+```
+
+Hard reset locale (DISTRUTTIVO: elimina anche i volumi dati):
+
+```bash
+docker compose down -v --remove-orphans
+docker compose up -d --build
 ```
 
 Export CSV demo (lista filtrata + colonne configurabili):
@@ -164,13 +220,23 @@ Config da `.env`:
 Header di sicurezza base applicati in Nginx (`nosniff`, `x-frame-options`, `referrer-policy`, `xss-protection`).  
 Nota dev: HSTS non e forzato per evitare blocchi dei subdomini tenant con cert self-signed.
 
-### Upload e scanning placeholder
+### Upload allegati sicuro
 
 - Limite upload allegati: `MAX_ATTACHMENT_SIZE_MB`
-- Scan placeholder in upload:
-  - estensioni sospette
-  - signature EICAR test
-  - stato su allegato (`clean`, `suspicious`, `failed`)
+- Validazioni upload:
+  - MIME type consentiti/bloccati (`ATTACHMENT_ALLOWED_MIME_TYPES`, `ATTACHMENT_BLOCKED_MIME_TYPES`)
+  - estensioni consentite/bloccate (`ATTACHMENT_ALLOWED_EXTENSIONS`, `ATTACHMENT_BLOCKED_EXTENSIONS`)
+  - blocco pattern contenuto rischioso e signature EICAR test
+- Scanning:
+  - backend reale AV via ClamAV adapter (`ATTACHMENT_SCAN_BACKEND=clamav`, `CLAMAV_*`)
+  - placeholder consentito solo in dev con feature flag (`ENABLE_DEV_ATTACHMENT_SCANNER=true`)
+  - comportamento su scanner non disponibile configurabile (`BLOCK_UNSCANNED_ATTACHMENTS`)
+- Download allegati solo via endpoint autenticato/autorizzato:
+  - `GET /api/alerts/attachments/{id}/download/`
+- Hardening Nginx:
+  - accesso diretto `/media/attachments/*` negato (403)
+- Audit upload/download:
+  - audit operativo `AuditLog` + security audit `SecurityAuditEvent`
 
 ### Audit retention
 
@@ -211,6 +277,8 @@ Auth/Core:
 - `POST /api/auth/token/refresh/`
 - `GET /api/auth/me/`
 - `GET /api/auth/users/`
+- `GET /api/auth/users/assignable/`
+- `GET /api/auth/security-audit/`
 - `GET/PUT /api/core/dashboard/widgets/`
 - `GET /api/core/dashboard/tenants/`
 - `POST /api/core/dashboard/tenants/reorder/`
@@ -224,15 +292,22 @@ Alert workflow:
 - `POST /api/alerts/alerts/{id}/assign/`
 - `GET/POST /api/alerts/alerts/{id}/comments/`
 - `GET/POST /api/alerts/alerts/{id}/attachments/`
+- `GET /api/alerts/attachments/{id}/download/`
 - `GET /api/alerts/alerts/{id}/timeline/`
 - `POST /api/alerts/alerts/export-configurable/`
 
 Config tenant:
 
+- `GET/POST/PATCH/DELETE /api/alerts/customers/`
+- `GET/PATCH /api/alerts/customers/{id}/settings/`
 - `GET/POST/PATCH/DELETE /api/alerts/states/`
 - `POST /api/alerts/states/reorder/`
 - `GET/POST/PATCH/DELETE /api/alerts/tags/`
 - `GET /api/alerts/audit-logs/`
+
+Customer settings notes:
+- Le fonti sono globali (`/api/ingestion/sources/`, scope globale).
+- In `/api/alerts/customers/{id}/settings/` il cliente puo solo abilitare/disabilitare fonti globali (`source_overrides`), senza modificare la configurazione globale della fonte.
 
 Ricerca:
 
@@ -249,6 +324,8 @@ Notifiche:
 Ingestion + parser:
 
 - `GET/POST /api/ingestion/sources/`
+- `GET /api/ingestion/sources/capabilities/`
+- `POST /api/ingestion/sources/create-from-preset/`
 - `POST /api/ingestion/sources/{id}/test-connection/`
 - `POST /api/ingestion/sources/{id}/run-now/`
 - `GET /api/ingestion/runs/`
@@ -257,6 +334,23 @@ Ingestion + parser:
 - `POST /api/ingestion/parsers/preview-config/`
 - `POST /api/ingestion/parsers/{id}/preview/`
 - `POST /api/ingestion/parsers/{id}/rollback/`
+
+Capability matrix ufficiale + preset vendor:
+
+- [`docs/source-capability-matrix.md`](docs/source-capability-matrix.md)
+
+## Multi-cliente operativo (business)
+
+All interno dello stesso schema tenant e disponibile il modello `Customer` business.
+
+- Le principali API dati supportano filtro `customer_id` (query param o payload, dove applicabile).
+- Migrazione e backfill: vedi [docs/migration-notes-multicliente.md](docs/migration-notes-multicliente.md).
+
+Comando backfill idempotente:
+
+```bash
+docker compose exec backend python manage.py backfill_customers
+```
 
 ## Checklist accettazione M5 (con dove verificare)
 

@@ -1,6 +1,7 @@
 import base64
 import json
 import time
+from datetime import datetime, timezone
 from urllib import parse, request
 from urllib.error import HTTPError, URLError
 
@@ -55,6 +56,33 @@ def _http_call(url, method, headers, payload, timeout=15):
         return response.status, _read_json(response)
 
 
+def _is_internal_mock_rest_endpoint(url):
+    parsed = parse.urlparse(url)
+    return parsed.path.rstrip("/") == "/api/ingestion/mock/rest-events"
+
+
+def _build_internal_mock_events():
+    now = datetime.now(timezone.utc).isoformat()
+    return [
+        {
+            "event_id": "rest-demo-1",
+            "title": "REST suspicious activity",
+            "severity": "high",
+            "timestamp": now,
+            "message": "Evento REST demo ripetibile per dedup",
+        },
+        {
+            "event_id": "rest-demo-2",
+            "title": "REST parser failure demo",
+            "severity": "medium",
+            "timestamp": now,
+            "message": "Evento con parse error controllato",
+            "force_parse_error": True,
+            "parse_error_message": "Errore parser simulato da REST mock",
+        },
+    ]
+
+
 def fetch_rest_events(source):
     config = source.config.config_json or {}
 
@@ -69,6 +97,8 @@ def fetch_rest_events(source):
 
     if not base_url:
         raise ValueError("Configurazione REST incompleta: url obbligatoria")
+    if _is_internal_mock_rest_endpoint(base_url):
+        return _build_internal_mock_events()
 
     pagination = config.get("pagination", {})
     rate_limit = int(config.get("rate_limit_per_minute", 0) or 0)
@@ -132,15 +162,35 @@ def test_rest_connection(source):
     base_url = config.get("url")
     if not base_url:
         return {"ok": False, "detail": "URL mancante"}
+    if _is_internal_mock_rest_endpoint(base_url):
+        return {"ok": True, "detail": "Mock REST endpoint interno"}
 
-    method = str(config.get("method", "GET")).upper()
+    healthcheck_url = config.get("healthcheck_url") or base_url
+    method = str(config.get("healthcheck_method", "GET")).upper()
     headers = _prepare_headers(config)
     timeout = int(config.get("timeout", 15))
+    expected_path = config.get("healthcheck_expected_path")
 
     try:
-        status, _ = _http_call(base_url, method, headers, config.get("body") if method != "GET" else None, timeout=timeout)
+        payload = config.get("healthcheck_body")
+        if payload is None and method != "GET":
+            payload = config.get("body")
+        status, response_data = _http_call(
+            healthcheck_url,
+            method,
+            headers,
+            payload if method != "GET" else None,
+            timeout=timeout,
+        )
         if status >= 400:
             return {"ok": False, "detail": f"HTTP {status}"}
+        if expected_path:
+            marker = _resolve_path(response_data, expected_path)
+            if marker is None:
+                return {
+                    "ok": False,
+                    "detail": f"HTTP {status} ma path atteso mancante: {expected_path}",
+                }
         return {"ok": True, "detail": f"HTTP {status}"}
     except (HTTPError, URLError, ValueError) as exc:
         return {"ok": False, "detail": str(exc)}

@@ -49,8 +49,8 @@ export type Attachment = {
   id: number;
   alert: number;
   filename: string;
-  file: string;
-  file_url: string;
+  file_url?: string | null;
+  download_url?: string | null;
   content_type: string;
   size: number;
   scan_status: "clean" | "suspicious" | "failed";
@@ -67,9 +67,82 @@ export type AlertOccurrence = {
   last_seen: string;
 };
 
+export type CustomerSummary = {
+  id: number;
+  name: string;
+  code: string;
+  is_enabled: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustomerOverview = CustomerSummary & {
+  active_alerts_total: number;
+  active_alerts_critical: number;
+  active_alerts_high: number;
+  active_alerts_medium: number;
+  active_alerts_low: number;
+  active_alerts_by_severity: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+};
+
+export type CustomerSettingsApi = {
+  tier: "Bronze" | "Silver" | "Gold" | "Platinum";
+  timezone: string;
+  sla_target: string;
+  primary_contact: string;
+  contact_email: string;
+  contact_phone: string;
+  notify_channels: string;
+  escalation_matrix: string;
+  maintenance_window: string;
+  default_severity: "low" | "medium" | "high" | "critical";
+  auto_assign_team: string;
+  notify_on_critical: boolean;
+  notify_on_high: boolean;
+  allow_suppress: boolean;
+  retention_days: number;
+  tag_defaults: string;
+  enrich_geo: boolean;
+  enrich_threat_intel: boolean;
+  allow_external_sharing: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustomerSourceCatalogEntry = {
+  source_id: number;
+  name: string;
+  type: string;
+  description: string;
+  globally_enabled: boolean;
+  customer_enabled: boolean;
+  parser_definition_name: string | null;
+  alert_type_rules_count: number;
+};
+
+export type CustomerSettingsResponse = {
+  customer: CustomerSummary;
+  settings: CustomerSettingsApi;
+  sources: CustomerSourceCatalogEntry[];
+  updated_at: string;
+};
+
+export type CustomerSettingsUpdatePayload = {
+  settings?: Partial<Omit<CustomerSettingsApi, "created_at" | "updated_at">>;
+  source_overrides?: Array<{ source_id: number; is_enabled: boolean }>;
+};
+
 export type Alert = {
   id: number;
   title: string;
+  customer?: number | null;
+  customer_detail?: CustomerSummary | null;
   severity: "low" | "medium" | "high" | "critical";
   event_timestamp: string;
   source_name: string;
@@ -117,8 +190,15 @@ export type DynamicFilter = {
 export type SearchRequest = {
   text?: string;
   source_name?: string;
+  source_names?: string[];
   state_id?: number;
+  state_ids?: number[];
   severity?: Alert["severity"];
+  severities?: Alert["severity"][];
+  alert_types?: string[];
+  tag_ids?: number[];
+  event_timestamp_from?: string;
+  event_timestamp_to?: string;
   is_active?: boolean;
   dynamic_filters?: DynamicFilter[];
   ordering?: string;
@@ -178,4 +258,15 @@ export type NotificationEvent = {
 export type NotificationListResponse = {
   unread_count: number;
   results: NotificationEvent[];
+};
+
+export type AlertDetailFieldConfig = {
+  id: number;
+  customer: number | null;
+  customer_detail?: CustomerSummary | null;
+  source_name: string;
+  alert_type: string;
+  visible_fields: string[];
+  created_at: string;
+  updated_at: string;
 };

@@ -1,5 +1,6 @@
 from typing import Any
 
+from tenant_data.customer_scoping import get_enabled_source_names_for_customer
 from tenant_data.models import Alert
 from tenant_data.search.backends import (
     ElasticSearchBackend,
@@ -85,8 +86,15 @@ def _schema_type_to_filter_type(schema_type: str, field_name: str, sample_value:
     return "keyword"
 
 
-def build_source_field_schema(source_name: str) -> list[dict[str, str]]:
+def build_source_field_schema(source_name: str, customer_id: int | None = None) -> list[dict[str, str]]:
     queryset = Alert.objects.filter(source_name=source_name).exclude(parsed_field_schema=[]).order_by("-event_timestamp", "-id")
+    if customer_id is not None:
+        queryset = queryset.filter(customer_id=customer_id)
+        enabled_source_names = get_enabled_source_names_for_customer(customer_id)
+        if enabled_source_names is not None:
+            if source_name not in enabled_source_names:
+                return []
+            queryset = queryset.filter(source_name__in=enabled_source_names)
 
     if not queryset.exists():
         return []
@@ -114,11 +122,18 @@ def build_source_field_schema(source_name: str) -> list[dict[str, str]]:
     return [{"field": key, "type": value} for key, value in sorted(fields.items())]
 
 
-def build_all_source_field_schemas() -> list[dict[str, Any]]:
-    source_names = (
-        Alert.objects.exclude(source_name="").values_list("source_name", flat=True).distinct().order_by("source_name")
-    )
+def build_all_source_field_schemas(customer_id: int | None = None) -> list[dict[str, Any]]:
+    alerts = Alert.objects.exclude(source_name="")
+    if customer_id is not None:
+        alerts = alerts.filter(customer_id=customer_id)
+        enabled_source_names = get_enabled_source_names_for_customer(customer_id)
+        if enabled_source_names is not None:
+            if enabled_source_names:
+                alerts = alerts.filter(source_name__in=enabled_source_names)
+            else:
+                return []
+    source_names = alerts.values_list("source_name", flat=True).distinct().order_by("source_name")
     data = []
     for source_name in source_names:
-        data.append({"source_name": source_name, "fields": build_source_field_schema(source_name)})
+        data.append({"source_name": source_name, "fields": build_source_field_schema(source_name, customer_id=customer_id)})
     return data

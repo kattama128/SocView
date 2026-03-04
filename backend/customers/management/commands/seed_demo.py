@@ -436,6 +436,7 @@ class Command(BaseCommand):
             AlertTag,
             Assignment,
             Comment,
+            Customer,
             DedupPolicy,
             ParserDefinition,
             ParserRevision,
@@ -445,6 +446,11 @@ class Command(BaseCommand):
             Tag,
         )
         from tenant_data.ingestion.parser import validate_parser_config
+
+        default_customer, _ = Customer.objects.update_or_create(
+            code=schema_name,
+            defaults={"name": schema_name.upper(), "is_enabled": True, "metadata": {"seeded": True}},
+        )
 
         states_by_name = {}
         for state_payload in DEFAULT_STATES:
@@ -474,8 +480,10 @@ class Command(BaseCommand):
         for index, alert_payload in enumerate(DEFAULT_ALERTS, start=1):
             fingerprint = f"{schema_name}-demo-{index}"
             alert, _ = Alert.objects.update_or_create(
+                customer=default_customer,
                 dedup_fingerprint=fingerprint,
                 defaults={
+                    "customer": default_customer,
                     "title": alert_payload["title"],
                     "severity": alert_payload["severity"],
                     "event_timestamp": now - timedelta(hours=index * 2),
@@ -518,9 +526,11 @@ class Command(BaseCommand):
                 config_json["headers"] = headers
 
             source, _ = Source.objects.update_or_create(
+                customer=None,
                 name=source_payload["name"],
                 type=source_payload["type"],
                 defaults={
+                    "customer": None,
                     "is_enabled": source_payload["is_enabled"],
                     "severity_map": source_payload["severity_map"],
                 },
@@ -576,8 +586,10 @@ class Command(BaseCommand):
         if manager_user:
             SavedSearch.objects.update_or_create(
                 user=manager_user,
+                customer=default_customer,
                 name="Alert aperti critici",
                 defaults={
+                    "customer": default_customer,
                     "text_query": "",
                     "source_name": "",
                     "state_id": None,
@@ -599,8 +611,10 @@ class Command(BaseCommand):
         if analyst_user:
             SavedSearch.objects.update_or_create(
                 user=analyst_user,
+                customer=default_customer,
                 name="VPN ad alta severita",
                 defaults={
+                    "customer": default_customer,
                     "text_query": "vpn",
                     "source_name": "vpn-gateway",
                     "state_id": None,

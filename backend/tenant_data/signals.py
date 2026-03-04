@@ -55,6 +55,7 @@ def alert_saved_sync_index(sender, instance, **kwargs):
         NotificationEvent.objects.update_or_create(
             alert=instance,
             defaults={
+                "customer": instance.customer,
                 "title": f"Alert critico: {instance.title}",
                 "message": f"Sorgente {instance.source_name} - stato {instance.current_state.name}",
                 "severity": NotificationEvent.Severity.CRITICAL,

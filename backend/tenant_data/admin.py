@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     Alert,
+    AlertDetailFieldConfig,
     AlertOccurrence,
     AlertState,
     AlertTag,
@@ -9,6 +10,10 @@ from .models import (
     Attachment,
     AuditLog,
     Comment,
+    Customer,
+    CustomerMembership,
+    CustomerSettings,
+    CustomerSourcePreference,
     DedupPolicy,
     IngestionEventLog,
     IngestionRun,
@@ -18,6 +23,7 @@ from .models import (
     ParserRevision,
     SavedSearch,
     Source,
+    SourceAlertTypeRule,
     SourceConfig,
     Tag,
     TenantPlaceholder,
@@ -42,10 +48,38 @@ class TagAdmin(admin.ModelAdmin):
     search_fields = ("name",)
 
 
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "code", "is_enabled", "updated_at")
+    list_filter = ("is_enabled",)
+    search_fields = ("name", "code")
+
+
+@admin.register(CustomerSettings)
+class CustomerSettingsAdmin(admin.ModelAdmin):
+    list_display = ("id", "customer", "tier", "default_severity", "retention_days", "updated_at")
+    list_filter = ("tier", "default_severity")
+    search_fields = ("customer__name", "customer__code", "contact_email")
+
+
+@admin.register(CustomerMembership)
+class CustomerMembershipAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "customer", "scope", "is_active", "updated_at")
+    list_filter = ("scope", "is_active")
+    search_fields = ("user__username", "user__email", "customer__name", "customer__code")
+
+
+@admin.register(CustomerSourcePreference)
+class CustomerSourcePreferenceAdmin(admin.ModelAdmin):
+    list_display = ("id", "customer", "source", "is_enabled", "updated_at")
+    list_filter = ("is_enabled",)
+    search_fields = ("customer__name", "source__name")
+
+
 @admin.register(Alert)
 class AlertAdmin(admin.ModelAdmin):
-    list_display = ("id", "title", "severity", "current_state", "source_name", "event_timestamp", "parse_error_detail")
-    list_filter = ("severity", "current_state")
+    list_display = ("id", "title", "customer", "severity", "current_state", "source_name", "event_timestamp", "parse_error_detail")
+    list_filter = ("customer", "severity", "current_state")
     search_fields = ("title", "source_name", "source_id", "dedup_fingerprint")
 
 
@@ -83,9 +117,16 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(Source)
 class SourceAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "type", "is_enabled", "updated_at")
-    list_filter = ("type", "is_enabled")
+    list_display = ("id", "name", "customer", "type", "is_enabled", "updated_at")
+    list_filter = ("customer", "type", "is_enabled")
     search_fields = ("name",)
+
+
+@admin.register(SourceAlertTypeRule)
+class SourceAlertTypeRuleAdmin(admin.ModelAdmin):
+    list_display = ("id", "source", "alert_name", "match_mode", "severity", "is_enabled", "received_count", "last_seen_at")
+    list_filter = ("match_mode", "severity", "is_enabled")
+    search_fields = ("alert_name", "source__name")
 
 
 @admin.register(ParserDefinition)
@@ -123,6 +164,7 @@ class DedupPolicyAdmin(admin.ModelAdmin):
 class IngestionRunAdmin(admin.ModelAdmin):
     list_display = (
         "id",
+        "customer",
         "source",
         "trigger",
         "status",
@@ -132,7 +174,7 @@ class IngestionRunAdmin(admin.ModelAdmin):
         "error_count",
         "started_at",
     )
-    list_filter = ("trigger", "status")
+    list_filter = ("customer", "trigger", "status")
 
 
 @admin.register(IngestionEventLog)
@@ -143,8 +185,8 @@ class IngestionEventLogAdmin(admin.ModelAdmin):
 
 @admin.register(NotificationEvent)
 class NotificationEventAdmin(admin.ModelAdmin):
-    list_display = ("id", "created_at", "severity", "title", "alert", "is_active")
-    list_filter = ("severity", "is_active")
+    list_display = ("id", "created_at", "customer", "severity", "title", "alert", "is_active")
+    list_filter = ("customer", "severity", "is_active")
     search_fields = ("title", "message", "alert__title")
 
 
@@ -156,6 +198,13 @@ class NotificationReadAdmin(admin.ModelAdmin):
 
 @admin.register(SavedSearch)
 class SavedSearchAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "name", "source_name", "ordering", "updated_at")
+    list_display = ("id", "user", "customer", "name", "source_name", "ordering", "updated_at")
     list_filter = ("severity",)
     search_fields = ("name", "user__username", "source_name")
+
+
+@admin.register(AlertDetailFieldConfig)
+class AlertDetailFieldConfigAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "customer", "source_name", "alert_type", "updated_at")
+    list_filter = ("customer",)
+    search_fields = ("source_name", "alert_type", "user__username")

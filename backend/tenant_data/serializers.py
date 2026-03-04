@@ -1,8 +1,10 @@
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from rest_framework import serializers
 
 from tenant_data.models import (
     Alert,
+    AlertDetailFieldConfig,
     AlertOccurrence,
     AlertState,
     AlertTag,
@@ -10,9 +12,12 @@ from tenant_data.models import (
     Attachment,
     AuditLog,
     Comment,
+    Customer,
+    CustomerSettings,
     NotificationEvent,
     NotificationRead,
     SavedSearch,
+    Source,
     Tag,
 )
 
@@ -29,6 +34,107 @@ class AlertStateSerializer(serializers.ModelSerializer):
     class Meta:
         model = AlertState
         fields = ("id", "name", "order", "is_final", "is_enabled", "created_at", "updated_at")
+
+
+class CustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = ("id", "name", "code", "is_enabled", "metadata", "created_at", "updated_at")
+
+
+class CustomerOverviewSerializer(CustomerSerializer):
+    active_alerts_total = serializers.IntegerField(read_only=True)
+    active_alerts_critical = serializers.IntegerField(read_only=True)
+    active_alerts_high = serializers.IntegerField(read_only=True)
+    active_alerts_medium = serializers.IntegerField(read_only=True)
+    active_alerts_low = serializers.IntegerField(read_only=True)
+    active_alerts_by_severity = serializers.SerializerMethodField()
+
+    class Meta(CustomerSerializer.Meta):
+        fields = CustomerSerializer.Meta.fields + (
+            "active_alerts_total",
+            "active_alerts_critical",
+            "active_alerts_high",
+            "active_alerts_medium",
+            "active_alerts_low",
+            "active_alerts_by_severity",
+        )
+
+    def get_active_alerts_by_severity(self, obj):
+        return {
+            "critical": getattr(obj, "active_alerts_critical", 0) or 0,
+            "high": getattr(obj, "active_alerts_high", 0) or 0,
+            "medium": getattr(obj, "active_alerts_medium", 0) or 0,
+            "low": getattr(obj, "active_alerts_low", 0) or 0,
+        }
+
+
+class CustomerSettingsSerializer(serializers.ModelSerializer):
+    contact_email = serializers.EmailField()
+    retention_days = serializers.IntegerField(min_value=1, max_value=3650)
+
+    class Meta:
+        model = CustomerSettings
+        fields = (
+            "tier",
+            "timezone",
+            "sla_target",
+            "primary_contact",
+            "contact_email",
+            "contact_phone",
+            "notify_channels",
+            "escalation_matrix",
+            "maintenance_window",
+            "default_severity",
+            "auto_assign_team",
+            "notify_on_critical",
+            "notify_on_high",
+            "allow_suppress",
+            "retention_days",
+            "tag_defaults",
+            "enrich_geo",
+            "enrich_threat_intel",
+            "allow_external_sharing",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("created_at", "updated_at")
+
+
+class CustomerSourceOverrideSerializer(serializers.Serializer):
+    source_id = serializers.PrimaryKeyRelatedField(
+        source="source",
+        queryset=Source.objects.all(),
+    )
+    is_enabled = serializers.BooleanField()
+
+    def validate_source(self, source):
+        if source.customer_id is not None:
+            raise serializers.ValidationError("Solo fonti globali supportate in impostazioni cliente")
+        return source
+
+
+class CustomerSourceCatalogSerializer(serializers.Serializer):
+    source_id = serializers.IntegerField()
+    name = serializers.CharField()
+    type = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    globally_enabled = serializers.BooleanField()
+    customer_enabled = serializers.BooleanField()
+    parser_definition_name = serializers.CharField(allow_null=True, allow_blank=True)
+    alert_type_rules_count = serializers.IntegerField()
+
+
+class CustomerSettingsUpsertSerializer(serializers.Serializer):
+    settings = CustomerSettingsSerializer(required=False)
+    source_overrides = CustomerSourceOverrideSerializer(many=True, required=False)
+
+
+class CustomerSettingsResponseSerializer(serializers.Serializer):
+    customer = CustomerSerializer()
+    settings = CustomerSettingsSerializer()
+    sources = CustomerSourceCatalogSerializer(many=True)
+    updated_at = serializers.DateTimeField()
 
 
 class TagSerializer(serializers.ModelSerializer):
@@ -73,6 +179,7 @@ class CommentSerializer(serializers.ModelSerializer):
 class AttachmentSerializer(serializers.ModelSerializer):
     uploaded_by_detail = UserSummarySerializer(source="uploaded_by", read_only=True)
     file_url = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Attachment
@@ -80,8 +187,8 @@ class AttachmentSerializer(serializers.ModelSerializer):
             "id",
             "alert",
             "filename",
-            "file",
             "file_url",
+            "download_url",
             "content_type",
             "size",
             "scan_status",
@@ -94,15 +201,20 @@ class AttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = ("alert", "uploaded_by", "size", "content_type", "filename")
 
     def get_file_url(self, obj) -> str | None:
+        return self.get_download_url(obj)
+
+    def get_download_url(self, obj) -> str | None:
         request = self.context.get("request")
         if not obj.file:
             return None
+        relative_url = reverse("attachment-download", kwargs={"pk": obj.pk})
         if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+            return request.build_absolute_uri(relative_url)
+        return relative_url
 
 
 class AlertBaseSerializer(serializers.ModelSerializer):
+    customer_detail = CustomerSerializer(source="customer", read_only=True)
     is_active = serializers.SerializerMethodField()
     current_state_detail = AlertStateSerializer(source="current_state", read_only=True)
     occurrence = AlertOccurrenceSerializer(read_only=True)
@@ -114,6 +226,8 @@ class AlertBaseSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "title",
+            "customer",
+            "customer_detail",
             "severity",
             "event_timestamp",
             "source_name",
@@ -146,6 +260,8 @@ class AlertListSerializer(AlertBaseSerializer):
         fields = (
             "id",
             "title",
+            "customer",
+            "customer_detail",
             "severity",
             "event_timestamp",
             "source_name",
@@ -240,18 +356,61 @@ class DynamicFilterSerializer(serializers.Serializer):
 
 
 class AlertSearchRequestSerializer(serializers.Serializer):
+    customer_id = serializers.IntegerField(required=False, min_value=1)
     text = serializers.CharField(required=False, allow_blank=True)
     source_name = serializers.CharField(required=False, allow_blank=True)
+    source_names = serializers.ListField(
+        child=serializers.CharField(allow_blank=False, max_length=150),
+        required=False,
+        allow_empty=False,
+    )
     state_id = serializers.IntegerField(required=False, min_value=1)
+    state_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=False,
+    )
     severity = serializers.ChoiceField(choices=Alert.Severity.values, required=False)
+    severities = serializers.ListField(
+        child=serializers.ChoiceField(choices=Alert.Severity.values),
+        required=False,
+        allow_empty=False,
+    )
+    alert_types = serializers.ListField(
+        child=serializers.CharField(allow_blank=False, max_length=255),
+        required=False,
+        allow_empty=False,
+    )
+    tag_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=False,
+    )
+    event_timestamp_from = serializers.DateTimeField(required=False)
+    event_timestamp_to = serializers.DateTimeField(required=False)
     is_active = serializers.BooleanField(required=False)
     dynamic_filters = DynamicFilterSerializer(many=True, required=False)
     ordering = serializers.CharField(required=False, allow_blank=True, default="-event_timestamp")
     page = serializers.IntegerField(required=False, min_value=1, default=1)
     page_size = serializers.IntegerField(required=False, min_value=1, max_value=100, default=25)
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        from_ts = attrs.get("event_timestamp_from")
+        to_ts = attrs.get("event_timestamp_to")
+        if from_ts and to_ts and from_ts > to_ts:
+            raise serializers.ValidationError(
+                {"event_timestamp_to": "event_timestamp_to deve essere >= event_timestamp_from"}
+            )
+        return attrs
+
 
 class SavedSearchSerializer(serializers.ModelSerializer):
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.objects.all(),
+        required=False,
+        allow_null=True,
+    )
     severity = serializers.ChoiceField(
         choices=Alert.Severity.choices,
         required=False,
@@ -264,6 +423,7 @@ class SavedSearchSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "customer",
             "text_query",
             "source_name",
             "state_id",
@@ -308,6 +468,7 @@ class AlertTimelineEventSerializer(serializers.Serializer):
 
 class NotificationEventSerializer(serializers.ModelSerializer):
     alert_title = serializers.CharField(source="alert.title", read_only=True)
+    customer_detail = CustomerSerializer(source="customer", read_only=True)
     is_read = serializers.SerializerMethodField()
 
     class Meta:
@@ -315,6 +476,8 @@ class NotificationEventSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "alert",
+            "customer",
+            "customer_detail",
             "alert_title",
             "title",
             "message",
@@ -340,3 +503,34 @@ class NotificationAckSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+
+
+class AlertDetailFieldConfigSerializer(serializers.ModelSerializer):
+    customer_detail = CustomerSerializer(source="customer", read_only=True)
+
+    class Meta:
+        model = AlertDetailFieldConfig
+        fields = (
+            "id",
+            "customer",
+            "customer_detail",
+            "source_name",
+            "alert_type",
+            "visible_fields",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("created_at", "updated_at")
+
+    def validate_visible_fields(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("visible_fields deve essere una lista")
+        normalized = []
+        seen = set()
+        for item in value:
+            key = str(item).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(key)
+        return normalized

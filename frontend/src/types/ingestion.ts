@@ -1,4 +1,56 @@
-export type SourceType = "imap" | "rest" | "webhook";
+export type SourceType =
+  | "imap"
+  | "rest"
+  | "webhook"
+  | "syslog_udp"
+  | "syslog_tcp"
+  | "kafka_topic"
+  | "s3_bucket"
+  | "azure_event_hub"
+  | "gcp_pubsub"
+  | "sftp_drop";
+
+export type SourceSupportStatus = "ga" | "beta" | "planned";
+
+export type SourceTypeCapability = {
+  type: SourceType;
+  label: string;
+  status: SourceSupportStatus;
+  is_operational: boolean;
+  create_enabled: boolean;
+  supports_test_connection: boolean;
+  supports_run_now: boolean;
+  supports_polling: boolean;
+  supports_push: boolean;
+  notes: string;
+};
+
+export type SourcePresetCapability = {
+  key: string;
+  label: string;
+  description: string;
+  source_type: SourceType;
+  status: SourceSupportStatus;
+  auto_parser: boolean;
+};
+
+export type SourceCapabilitiesResponse = {
+  types: SourceTypeCapability[];
+  presets: SourcePresetCapability[];
+};
+
+export type SourceAlertTypeRule = {
+  id: number;
+  alert_name: string;
+  match_mode: "exact" | "contains" | "regex";
+  severity: "low" | "medium" | "high" | "critical";
+  is_enabled: boolean;
+  notes: string;
+  received_count: number;
+  last_seen_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 export type SourceConfig = {
   config_json: Record<string, unknown>;
@@ -24,12 +76,16 @@ export type DedupPolicy = {
 
 export type Source = {
   id: number;
+  customer: number | null;
+  customer_name: string | null;
   name: string;
+  description: string;
   type: SourceType;
   is_enabled: boolean;
   severity_map: Record<string, unknown>;
   config: SourceConfig;
   dedup_policy: DedupPolicy;
+  alert_type_rules: SourceAlertTypeRule[];
   webhook_endpoint: string | null;
   parser_definition_id: number | null;
   parser_definition_name: string | null;
@@ -38,10 +94,20 @@ export type Source = {
 };
 
 export type SourceWritePayload = {
+  customer?: number | null;
   name: string;
+  description?: string;
   type: SourceType;
   is_enabled: boolean;
   severity_map: Record<string, unknown>;
+  alert_type_rules?: Array<{
+    id?: number;
+    alert_name: string;
+    match_mode: "exact" | "contains" | "regex";
+    severity: "low" | "medium" | "high" | "critical";
+    is_enabled: boolean;
+    notes: string;
+  }>;
   config: {
     config_json: Record<string, unknown>;
     poll_interval_seconds: number;

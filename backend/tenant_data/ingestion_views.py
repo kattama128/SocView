@@ -8,34 +8,96 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.models import User
+from accounts.rbac import CAP_MANAGE_SOURCES, CAP_VIEW, has_capability
 from core.throttling import WebhookRateThrottle
 from tenant_data.audit import create_audit_log
+from tenant_data.ingestion.parser import parse_parser_config_text
 from tenant_data.ingestion.service import run_ingestion_for_source, test_source_connection
 from tenant_data.ingestion_serializers import IngestionRunSerializer, SourceSerializer
-from tenant_data.models import IngestionRun, Source, SourceConfig
+from tenant_data.models import IngestionRun, ParserDefinition, ParserRevision, Source, SourceConfig
 from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
+from tenant_data.rbac import (
+    ensure_customer_capability,
+    filter_queryset_by_customer_access,
+    parse_and_validate_customer_id,
+    resolve_customer_for_user,
+)
+from tenant_data.source_capabilities import (
+    get_source_preset,
+    list_source_presets,
+    list_source_type_capabilities,
+)
 from tenant_data.tasks import ingest_source_task
 
 
+class SourceCreateFromPresetSerializer(serializers.Serializer):
+    preset_key = serializers.CharField()
+    name = serializers.CharField(required=False, allow_blank=True, max_length=150)
+    description = serializers.CharField(required=False, allow_blank=True)
+    customer_id = serializers.IntegerField(required=False, allow_null=True)
+
+
 class SourceViewSet(viewsets.ModelViewSet):
-    queryset = Source.objects.select_related("config", "dedup_policy", "parser_definition").all()
+    queryset = (
+        Source.objects.select_related("config", "dedup_policy", "parser_definition", "customer")
+        .prefetch_related("alert_type_rules")
+        .all()
+    )
     serializer_class = SourceSerializer
     permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
-    write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER)
+    read_capability = CAP_MANAGE_SOURCES
+    write_capability = CAP_MANAGE_SOURCES
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
 
+    def _parse_customer_id(self, raw_value):
+        return parse_and_validate_customer_id(
+            raw_value,
+            user=self.request.user,
+            capability=CAP_MANAGE_SOURCES,
+        )
+
+    def _resolve_customer(self, customer_id):
+        return resolve_customer_for_user(
+            customer_id,
+            user=self.request.user,
+            capability=CAP_MANAGE_SOURCES,
+        )
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        customer_id = self._parse_customer_id(self.request.query_params.get("customer_id"))
+        scope = self.request.query_params.get("scope")
+        if customer_id is not None:
+            queryset = queryset.filter(customer_id=customer_id)
+        elif scope != "all":
+            queryset = queryset.filter(customer__isnull=True)
+        queryset = filter_queryset_by_customer_access(queryset, self.request.user, include_null=True)
+        return queryset
+
     def perform_create(self, serializer):
-        source = serializer.save()
+        customer = serializer.validated_data.get("customer")
+        if customer is None and (
+            self.request.data.get("customer") is not None
+            or self.request.data.get("customer_id") is not None
+            or self.request.query_params.get("customer_id") is not None
+        ):
+            customer_id = self._parse_customer_id(
+                self.request.data.get("customer_id", self.request.query_params.get("customer_id"))
+            )
+            customer = self._resolve_customer(customer_id)
+        elif customer is not None:
+            ensure_customer_capability(self.request.user, customer.id, CAP_MANAGE_SOURCES)
+        source = serializer.save(customer=customer)
         create_audit_log(
             self.request,
             action="source.created",
             obj=source,
             diff={
+                "customer_id": source.customer_id,
                 "name": source.name,
                 "type": source.type,
                 "is_enabled": source.is_enabled,
@@ -43,7 +105,10 @@ class SourceViewSet(viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
+        next_customer = serializer.validated_data.get("customer", serializer.instance.customer)
+        ensure_customer_capability(self.request.user, getattr(next_customer, "id", None), CAP_MANAGE_SOURCES)
         old = {
+            "customer_id": serializer.instance.customer_id,
             "name": serializer.instance.name,
             "type": serializer.instance.type,
             "is_enabled": serializer.instance.is_enabled,
@@ -57,6 +122,7 @@ class SourceViewSet(viewsets.ModelViewSet):
             diff={
                 "old": old,
                 "new": {
+                    "customer_id": source.customer_id,
                     "name": source.name,
                     "type": source.type,
                     "is_enabled": source.is_enabled,
@@ -66,14 +132,134 @@ class SourceViewSet(viewsets.ModelViewSet):
         )
 
     def perform_destroy(self, instance):
+        ensure_customer_capability(self.request.user, instance.customer_id, CAP_MANAGE_SOURCES)
         payload = {"name": instance.name, "type": instance.type}
         super().perform_destroy(instance)
         create_audit_log(self.request, action="source.deleted", obj=instance, diff=payload)
+
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="SourceCapabilitiesResponse",
+            fields={
+                "types": inline_serializer(
+                    name="SourceTypeCapability",
+                    many=True,
+                    fields={
+                        "type": serializers.CharField(),
+                        "label": serializers.CharField(),
+                        "status": serializers.CharField(),
+                        "is_operational": serializers.BooleanField(),
+                        "create_enabled": serializers.BooleanField(),
+                        "supports_test_connection": serializers.BooleanField(),
+                        "supports_run_now": serializers.BooleanField(),
+                        "supports_polling": serializers.BooleanField(),
+                        "supports_push": serializers.BooleanField(),
+                        "notes": serializers.CharField(),
+                    },
+                ),
+                "presets": inline_serializer(
+                    name="SourcePresetCapability",
+                    many=True,
+                    fields={
+                        "key": serializers.CharField(),
+                        "label": serializers.CharField(),
+                        "description": serializers.CharField(),
+                        "source_type": serializers.CharField(),
+                        "status": serializers.CharField(),
+                        "auto_parser": serializers.BooleanField(),
+                    },
+                ),
+            },
+        ),
+        tags=["Ingestion Sources"],
+    )
+    @action(detail=False, methods=["get"], url_path="capabilities")
+    def capabilities(self, request):
+        return Response(
+            {
+                "types": list_source_type_capabilities(),
+                "presets": list_source_presets(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        request=SourceCreateFromPresetSerializer,
+        responses=SourceSerializer,
+        tags=["Ingestion Sources"],
+    )
+    @action(detail=False, methods=["post"], url_path="create-from-preset")
+    def create_from_preset(self, request):
+        serializer = SourceCreateFromPresetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        preset_key = payload["preset_key"]
+        preset = get_source_preset(preset_key)
+        if not preset:
+            return Response({"detail": "Preset non trovato"}, status=status.HTTP_404_NOT_FOUND)
+
+        customer_id = payload.get("customer_id")
+        customer = None
+        if customer_id is not None:
+            customer = resolve_customer_for_user(
+                customer_id,
+                user=request.user,
+                capability=CAP_MANAGE_SOURCES,
+            )
+
+        source_payload = preset["source_payload"]
+        if payload.get("name"):
+            source_payload["name"] = payload.get("name").strip()
+        if payload.get("description") is not None:
+            source_payload["description"] = payload.get("description", "").strip()
+        if customer is not None:
+            source_payload["customer"] = customer.id
+
+        source_serializer = SourceSerializer(data=source_payload, context=self.get_serializer_context())
+        source_serializer.is_valid(raise_exception=True)
+        source = source_serializer.save(customer=customer)
+
+        parser_payload = preset.get("parser")
+        if parser_payload:
+            parser_definition = ParserDefinition.objects.create(
+                source=source,
+                name=parser_payload.get("name", f"{source.name} Parser"),
+                description=parser_payload.get("description", ""),
+                is_enabled=True,
+            )
+            config_text = parser_payload.get("config_text", "")
+            config_data = parse_parser_config_text(config_text)
+            parser_revision = ParserRevision.objects.create(
+                parser_definition=parser_definition,
+                version=1,
+                config_text=config_text,
+                config_data=config_data,
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            parser_definition.active_revision = parser_revision
+            parser_definition.save(update_fields=["active_revision", "updated_at"])
+
+        create_audit_log(
+            request,
+            action="source.created_from_preset",
+            obj=source,
+            diff={
+                "preset_key": preset_key,
+                "name": source.name,
+                "type": source.type,
+                "customer_id": source.customer_id,
+            },
+        )
+
+        response_payload = SourceSerializer(source, context=self.get_serializer_context()).data
+        return Response(response_payload, status=status.HTTP_201_CREATED)
 
     @extend_schema(request=None, responses=inline_serializer(name="TestConnectionResponse", fields={"ok": serializers.BooleanField(), "detail": serializers.CharField()}), tags=["Ingestion Sources"])
     @action(detail=True, methods=["post"], url_path="test-connection")
     def test_connection(self, request, pk=None):
         source = self.get_object()
+        ensure_customer_capability(request.user, source.customer_id, CAP_MANAGE_SOURCES)
         result = test_source_connection(source)
         config, _ = SourceConfig.objects.get_or_create(source=source)
 
@@ -96,9 +282,15 @@ class SourceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="run-now")
     def run_now(self, request, pk=None):
         source = self.get_object()
+        ensure_customer_capability(request.user, source.customer_id, CAP_MANAGE_SOURCES)
         if source.type == Source.Type.WEBHOOK:
             return Response(
                 {"detail": "Run now non disponibile per fonti webhook push"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if source.type not in {Source.Type.IMAP, Source.Type.REST}:
+            return Response(
+                {"detail": f"Run now non disponibile per fonti di tipo {source.type}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         schema_name = getattr(request.tenant, "schema_name", "public")
@@ -115,16 +307,29 @@ class SourceViewSet(viewsets.ModelViewSet):
 
 
 class IngestionRunViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = IngestionRun.objects.select_related("source").prefetch_related("events").all()
+    queryset = IngestionRun.objects.select_related("source", "customer").prefetch_related("events").all()
     serializer_class = IngestionRunSerializer
     permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if not has_capability(self.request.user, CAP_VIEW):
+            return IngestionRun.objects.none()
         queryset = super().get_queryset()
 
+        customer_id = self.request.query_params.get("customer_id")
         source_id = self.request.query_params.get("source_id")
         status_filter = self.request.query_params.get("status")
         trigger = self.request.query_params.get("trigger")
+
+        if customer_id:
+            parsed_customer_id = parse_and_validate_customer_id(
+                customer_id,
+                user=self.request.user,
+                capability=CAP_VIEW,
+            )
+            queryset = queryset.filter(customer_id=parsed_customer_id)
+        else:
+            queryset = filter_queryset_by_customer_access(queryset, self.request.user, include_null=True)
 
         if source_id:
             queryset = queryset.filter(source_id=source_id)
@@ -217,6 +422,8 @@ class MockRestEventsView(APIView):
         tags=["Ingestion Mock"],
     )
     def get(self, request):
+        if not has_capability(request.user, CAP_MANAGE_SOURCES):
+            return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)
         now = timezone.now().isoformat()
         return Response(
             [

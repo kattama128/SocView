@@ -73,7 +73,7 @@ function parseJsonInput(value: string): Record<string, unknown> {
 
 export default function ParserPage() {
   const { user } = useAuth();
-  const canManage = canManageSources(user?.role);
+  const canManage = canManageSources(user?.role, user?.permissions);
 
   const [sources, setSources] = useState<Source[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<number | "">("");
@@ -152,7 +152,6 @@ export default function ParserPage() {
 
   useEffect(() => {
     void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSourceChange = async (sourceId: number) => {

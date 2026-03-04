@@ -3,12 +3,17 @@ from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from accounts.models import User
+from accounts.rbac import CAP_MANAGE_SOURCES
 from tenant_data.audit import create_audit_log
 from tenant_data.ingestion.parser import ParserValidationError, parse_event, parse_parser_config_text
 from tenant_data.models import ParserDefinition, ParserRevision
 from tenant_data.parser_serializers import ParserDefinitionSerializer
 from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
+from tenant_data.rbac import (
+    ensure_customer_capability,
+    filter_queryset_by_customer_access,
+    parse_and_validate_customer_id,
+)
 
 
 class ParserDefinitionViewSet(viewsets.ModelViewSet):
@@ -19,16 +24,34 @@ class ParserDefinitionViewSet(viewsets.ModelViewSet):
     )
     serializer_class = ParserDefinitionSerializer
     permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
-    write_roles = (User.Role.SUPER_ADMIN, User.Role.SOC_MANAGER)
+    read_capability = CAP_MANAGE_SOURCES
+    write_capability = CAP_MANAGE_SOURCES
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            parsed_customer_id = parse_and_validate_customer_id(
+                customer_id,
+                user=self.request.user,
+                capability=CAP_MANAGE_SOURCES,
+            )
+            queryset = queryset.filter(source__customer_id=parsed_customer_id)
+        else:
+            queryset = filter_queryset_by_customer_access(
+                queryset,
+                self.request.user,
+                customer_field="source__customer_id",
+                include_null=True,
+            )
         source_id = self.request.query_params.get("source_id")
         if source_id:
             queryset = queryset.filter(source_id=source_id)
         return queryset
 
     def perform_create(self, serializer):
+        source = serializer.validated_data.get("source")
+        ensure_customer_capability(self.request.user, getattr(source, "customer_id", None), CAP_MANAGE_SOURCES)
         parser_definition = serializer.save()
         create_audit_log(
             self.request,
@@ -43,6 +66,8 @@ class ParserDefinitionViewSet(viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
+        source = serializer.instance.source
+        ensure_customer_capability(self.request.user, getattr(source, "customer_id", None), CAP_MANAGE_SOURCES)
         old = {
             "name": serializer.instance.name,
             "description": serializer.instance.description,
@@ -66,6 +91,7 @@ class ParserDefinitionViewSet(viewsets.ModelViewSet):
         )
 
     def perform_destroy(self, instance):
+        ensure_customer_capability(self.request.user, getattr(instance.source, "customer_id", None), CAP_MANAGE_SOURCES)
         payload = {
             "source_id": instance.source_id,
             "name": instance.name,
