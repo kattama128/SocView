@@ -2,6 +2,7 @@ import { LinearProgress } from "@mui/material";
 import { Suspense, lazy } from "react";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 
+import ErrorBoundary from "./components/ErrorBoundary";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { TimeRangeProvider } from "./contexts/TimeRangeContext";
 import AppLayout from "./layout/AppLayout";
@@ -30,8 +31,9 @@ function LegacyCustomerRouteRedirect({ suffix = "" }: { suffix?: string }) {
 export default function App() {
   return (
     <TimeRangeProvider>
-      <Suspense fallback={<LinearProgress />}>
-        <Routes>
+      <ErrorBoundary>
+        <Suspense fallback={<LinearProgress />}>
+          <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route element={<ProtectedRoute />}>
             <Route element={<AppLayout />}>
@@ -62,8 +64,9 @@ export default function App() {
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Suspense>
+          </Routes>
+        </Suspense>
+      </ErrorBoundary>
     </TimeRangeProvider>
   );
 }

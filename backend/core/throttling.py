@@ -1,4 +1,4 @@
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 
 class AuthRateThrottle(AnonRateThrottle):
@@ -7,3 +7,7 @@ class AuthRateThrottle(AnonRateThrottle):
 
 class WebhookRateThrottle(AnonRateThrottle):
     scope = "webhook"
+
+
+class DefaultUserRateThrottle(UserRateThrottle):
+    scope = "auth"

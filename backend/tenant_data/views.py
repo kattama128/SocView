@@ -1,10 +1,12 @@
 import csv
 from datetime import timedelta
+import logging
 import re
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.utils.text import get_valid_filename
@@ -105,6 +107,8 @@ from tenant_data.serializers import (
     TagSerializer,
 )
 
+logger = logging.getLogger(__name__)
+
 User = get_user_model()
 MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_.-]{1,150})")
 
@@ -119,6 +123,12 @@ def _resolve_customer_by_id(customer_id, field_name="customer_id", user=None, ca
         capability=capability,
         field_name=field_name,
     )
+
+
+class StandardPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 500
 
 
 class AlertPagination(PageNumberPagination):
@@ -257,6 +267,7 @@ class TagViewSet(viewsets.ModelViewSet):
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all().order_by("name", "id")
     serializer_class = CustomerSerializer
+    pagination_class = StandardPagination
     permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     read_capability = CAP_VIEW
     write_capability = CAP_MANAGE_CUSTOMERS
@@ -364,7 +375,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         global_sources = (
             Source.objects.filter(customer__isnull=True)
             .select_related("parser_definition")
-            .prefetch_related("alert_type_rules")
+            .annotate(rules_count=Count("alert_type_rules"))
             .order_by("name", "id")
         )
         overrides = {
@@ -391,7 +402,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
                     "globally_enabled": source.is_enabled,
                     "customer_enabled": requested_enabled and source.is_enabled,
                     "parser_definition_name": parser_name,
-                    "alert_type_rules_count": source.alert_type_rules.count(),
+                    "alert_type_rules_count": source.rules_count,
                 }
             )
         serializer = CustomerSourceCatalogSerializer(payload, many=True)
@@ -984,51 +995,55 @@ class AlertViewSet(viewsets.ModelViewSet):
             state = payload["state_id"]
             for alert in alerts:
                 try:
-                    old_state = alert.current_state
-                    alert.current_state = state
-                    alert.save(update_fields=["current_state", "updated_at"])
-                    create_audit_log(
-                        request,
-                        action="alert.state_changed",
-                        obj=alert,
-                        alert=alert,
-                        diff={"old_state": old_state.name, "new_state": state.name},
-                    )
+                    with transaction.atomic():
+                        old_state = alert.current_state
+                        alert.current_state = state
+                        alert.save(update_fields=["current_state", "updated_at"])
+                        create_audit_log(
+                            request,
+                            action="alert.state_changed",
+                            obj=alert,
+                            alert=alert,
+                            diff={"old_state": old_state.name, "new_state": state.name},
+                        )
                     updated += 1
                 except Exception:
+                    logger.exception("Bulk change_state failed for alert %s", alert.id)
                     errors += 1
 
         if action_name == "assign":
             assignee = payload.get("assigned_to_id")
             for alert in alerts:
                 try:
-                    if assignee is not None:
-                        if not has_capability(assignee, CAP_TRIAGE):
-                            raise ValidationError({"assigned_to_id": "Utente non abilitato al triage"})
-                        if alert.customer_id is not None:
-                            ensure_customer_capability(
-                                assignee,
-                                alert.customer_id,
-                                CAP_VIEW,
-                                field_name="assigned_to_id",
-                            )
-                    assignment, _ = Assignment.objects.get_or_create(alert=alert)
-                    old_assignee = assignment.assigned_to
-                    assignment.assigned_to = assignee
-                    assignment.assigned_by = request.user
-                    assignment.save()
-                    create_audit_log(
-                        request,
-                        action="alert.assigned",
-                        obj=assignment,
-                        alert=alert,
-                        diff={
-                            "old_assigned_to": old_assignee.username if old_assignee else None,
-                            "new_assigned_to": assignee.username if assignee else None,
-                        },
-                    )
+                    with transaction.atomic():
+                        if assignee is not None:
+                            if not has_capability(assignee, CAP_TRIAGE):
+                                raise ValidationError({"assigned_to_id": "Utente non abilitato al triage"})
+                            if alert.customer_id is not None:
+                                ensure_customer_capability(
+                                    assignee,
+                                    alert.customer_id,
+                                    CAP_VIEW,
+                                    field_name="assigned_to_id",
+                                )
+                        assignment, _ = Assignment.objects.get_or_create(alert=alert)
+                        old_assignee = assignment.assigned_to
+                        assignment.assigned_to = assignee
+                        assignment.assigned_by = request.user
+                        assignment.save()
+                        create_audit_log(
+                            request,
+                            action="alert.assigned",
+                            obj=assignment,
+                            alert=alert,
+                            diff={
+                                "old_assigned_to": old_assignee.username if old_assignee else None,
+                                "new_assigned_to": assignee.username if assignee else None,
+                            },
+                        )
                     updated += 1
                 except Exception:
+                    logger.exception("Bulk assign failed for alert %s", alert.id)
                     errors += 1
 
         if action_name == "add_tag":
@@ -1037,17 +1052,19 @@ class AlertViewSet(viewsets.ModelViewSet):
             tag_names = [tag.name for tag in tags]
             for alert in alerts:
                 try:
-                    for tag in tags:
-                        AlertTag.objects.get_or_create(alert=alert, tag=tag)
-                    create_audit_log(
-                        request,
-                        action="alert.tag_added",
-                        obj=alert,
-                        alert=alert,
-                        diff={"tag_ids": [tag.id for tag in tags], "tag_names": tag_names},
-                    )
+                    with transaction.atomic():
+                        for tag in tags:
+                            AlertTag.objects.get_or_create(alert=alert, tag=tag)
+                        create_audit_log(
+                            request,
+                            action="alert.tag_added",
+                            obj=alert,
+                            alert=alert,
+                            diff={"tag_ids": [tag.id for tag in tags], "tag_names": tag_names},
+                        )
                     updated += 1
                 except Exception:
+                    logger.exception("Bulk add_tag failed for alert %s", alert.id)
                     errors += 1
 
         return Response({"updated": updated, "errors": errors}, status=status.HTTP_200_OK)
@@ -1437,6 +1454,7 @@ class AlertViewSet(viewsets.ModelViewSet):
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.select_related("actor").all()
     serializer_class = AuditLogSerializer
+    pagination_class = StandardPagination
     permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     read_capability = CAP_MANAGE_CUSTOMERS
 
@@ -1737,6 +1755,7 @@ class AlertDetailFieldConfigViewSet(viewsets.ModelViewSet):
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationEventSerializer
+    pagination_class = StandardPagination
     permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     @staticmethod

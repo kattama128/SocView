@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from django.db.models import Q
@@ -17,6 +18,8 @@ from accounts.rbac import (
     has_capability,
 )
 from tenant_data.models import Customer, CustomerMembership
+
+logger = logging.getLogger(__name__)
 
 SCOPE_CAPABILITIES: dict[str, set[str]] = {
     CustomerMembership.Scope.VIEWER: {CAP_VIEW, CAP_EXPORT},
@@ -50,9 +53,12 @@ def get_accessible_customer_ids(user) -> set[int] | None:
     membership_ids = set(_active_memberships_queryset(user).values_list("customer_id", flat=True))
     if membership_ids:
         return membership_ids
-    # Backward compatibility: legacy users without explicit memberships keep full tenant visibility.
     if has_capability(user, CAP_VIEW):
-        return None
+        logger.warning(
+            "User %s (id=%s) has CAP_VIEW but no customer memberships — access denied. "
+            "Assign explicit memberships to restore access.",
+            user.username, user.id,
+        )
     return set()
 
 
@@ -69,10 +75,6 @@ def has_customer_capability(user, customer_id: int | None, capability: str) -> b
 
     membership = _active_memberships_queryset(user).filter(customer_id=customer_id).first()
     if not membership:
-        # Backward compatibility: when a user has no explicit membership rows,
-        # preserve legacy full-tenant access based on role capability.
-        if not _active_memberships_queryset(user).exists() and has_capability(user, capability):
-            return True
         return False
     return capability in SCOPE_CAPABILITIES.get(membership.scope, set())
 

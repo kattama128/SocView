@@ -1,9 +1,41 @@
 from dataclasses import dataclass
+import logging
 import re
+import signal
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
+_REGEX_MAX_LENGTH = 500
+_REGEX_TIMEOUT_SECONDS = 2
+
+
+class _RegexTimeout(Exception):
+    pass
+
+
+def _safe_regex_search(pattern: str, text: str, flags: int = 0, timeout: int = _REGEX_TIMEOUT_SECONDS):
+    """Execute re.search with a timeout to prevent ReDoS attacks."""
+    if len(pattern) > _REGEX_MAX_LENGTH:
+        logger.warning("Regex pattern too long (%d chars), skipping", len(pattern))
+        return None
+
+    def _handler(signum, frame):
+        raise _RegexTimeout()
+
+    old_handler = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(timeout)
+    try:
+        return re.search(pattern, text, flags=flags)
+    except _RegexTimeout:
+        logger.warning("Regex timed out after %ds: %s", timeout, pattern[:80])
+        return None
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 from tenant_data.ingestion.connectors.imap_connector import fetch_imap_events, test_imap_connection
 from tenant_data.ingestion.connectors.rest_connector import fetch_rest_events, test_rest_connection
@@ -72,10 +104,10 @@ def _find_alert_type_rule(source, title):
         if not rule.alert_name:
             continue
         try:
-            if re.search(rule.alert_name, title, flags=re.IGNORECASE):
+            if _safe_regex_search(rule.alert_name, title, flags=re.IGNORECASE):
                 return rule
         except re.error:
-            # Ignore invalid custom regex and continue.
+            logger.warning("Invalid regex in alert type rule %s: %s", rule.id, rule.alert_name[:80])
             continue
     return None
 

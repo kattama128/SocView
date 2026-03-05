@@ -1,3 +1,5 @@
+import re
+
 from rest_framework import serializers
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -53,6 +55,8 @@ class DedupPolicySerializer(serializers.ModelSerializer):
 class SourceAlertTypeRuleSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
+    _REGEX_MAX_LENGTH = 500
+
     class Meta:
         model = SourceAlertTypeRule
         fields = (
@@ -68,6 +72,23 @@ class SourceAlertTypeRuleSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("received_count", "last_seen_at", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        match_mode = attrs.get("match_mode", getattr(self.instance, "match_mode", None))
+        alert_name = attrs.get("alert_name", getattr(self.instance, "alert_name", None))
+        if match_mode == SourceAlertTypeRule.MatchMode.REGEX and alert_name:
+            if len(alert_name) > self._REGEX_MAX_LENGTH:
+                raise serializers.ValidationError(
+                    {"alert_name": f"Pattern regex troppo lungo (max {self._REGEX_MAX_LENGTH} caratteri)."}
+                )
+            try:
+                re.compile(alert_name)
+            except re.error as exc:
+                raise serializers.ValidationError(
+                    {"alert_name": f"Regex non valida: {exc}"}
+                )
+        return attrs
 
 
 class SourceSerializer(serializers.ModelSerializer):

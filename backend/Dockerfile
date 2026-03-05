@@ -12,8 +12,13 @@ RUN apt-get update \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+RUN useradd -r -s /bin/false -d /app appuser
+
 COPY . /app
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8000
 CMD ["/app/entrypoint.sh"]
