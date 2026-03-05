@@ -1,5 +1,6 @@
 import CircleIcon from "@mui/icons-material/Circle";
-import { Box, Chip, Stack, Typography } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
 import { useCallback, useEffect, useState } from "react";
 
 import { useTenantApi } from "../hooks/useTenantApi";
@@ -21,18 +22,15 @@ function countSources(payload: SourcePayload): number {
   return 0;
 }
 
-function statusColor(status: HealthStatus): "success" | "warning" | "error" | "default" {
-  if (status === "ok") {
-    return "success";
-  }
-  if (status === "error") {
-    return "error";
-  }
-  return "default";
+function statusColor(status: HealthStatus): string {
+  if (status === "ok") return "#22c55e";
+  if (status === "error") return "#ef4444";
+  return "#94a3b8";
 }
 
 export default function StatusBar() {
   const api = useTenantApi();
+  const theme = useTheme();
   const [backendStatus, setBackendStatus] = useState<HealthStatus>("loading");
   const [queueStatus, setQueueStatus] = useState<HealthStatus>("loading");
   const [activeSources, setActiveSources] = useState<number>(0);
@@ -66,26 +64,62 @@ export default function StatusBar() {
     return () => window.clearInterval(timer);
   }, [poll]);
 
+  const items = [
+    { label: "Backend", status: backendStatus },
+    { label: "Queue", status: queueStatus },
+  ];
+
   return (
     <Box
-      sx={{ px: 2.1, py: 1.2, borderTop: "1px solid var(--border-subtle)", background: "var(--surface-2)" }}
+      sx={{ px: 2.5, py: 1.5, borderTop: "1px solid var(--border-subtle)" }}
       data-testid="status-bar"
     >
-      <Typography sx={{ fontSize: 11, color: "text.secondary", mb: 0.7 }}>Stato sistema</Typography>
-      <Stack spacing={0.7}>
-        <Chip
-          size="small"
-          color={statusColor(backendStatus)}
-          icon={<CircleIcon sx={{ fontSize: "0.7rem !important" }} />}
-          label={backendStatus === "ok" ? "Backend OK" : "Backend non raggiungibile"}
-        />
-        <Chip
-          size="small"
-          color={statusColor(queueStatus)}
-          icon={<CircleIcon sx={{ fontSize: "0.7rem !important" }} />}
-          label={queueStatus === "ok" ? "Queue OK" : "Queue degradata"}
-        />
-        <Chip size="small" label={`Sorgenti attive: ${activeSources}`} />
+      <Typography
+        sx={{
+          fontSize: "0.625rem",
+          fontWeight: 600,
+          color: "text.secondary",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          mb: 1,
+        }}
+      >
+        Stato sistema
+      </Typography>
+      <Stack spacing={0.75}>
+        {items.map(({ label, status }) => (
+          <Stack key={label} direction="row" alignItems="center" spacing={1}>
+            <CircleIcon sx={{ fontSize: 7, color: statusColor(status) }} />
+            <Typography sx={{ fontSize: "0.75rem", color: "text.secondary", flex: 1 }}>
+              {label}
+            </Typography>
+            <Typography
+              sx={{
+                fontSize: "0.6875rem",
+                fontWeight: 600,
+                color: status === "ok" ? "success.main" : status === "error" ? "error.main" : "text.disabled",
+              }}
+            >
+              {status === "ok" ? "OK" : status === "error" ? "Errore" : "..."}
+            </Typography>
+          </Stack>
+        ))}
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Box
+            sx={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: alpha(theme.palette.primary.main, 0.5),
+            }}
+          />
+          <Typography sx={{ fontSize: "0.75rem", color: "text.secondary", flex: 1 }}>
+            Sorgenti attive
+          </Typography>
+          <Typography sx={{ fontSize: "0.6875rem", fontWeight: 600, color: "text.primary" }}>
+            {activeSources}
+          </Typography>
+        </Stack>
       </Stack>
     </Box>
   );

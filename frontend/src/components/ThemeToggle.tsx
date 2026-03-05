@@ -9,14 +9,19 @@ export default function ThemeToggle() {
   const isDark = mode === "dark";
 
   return (
-    <Tooltip title={isDark ? "Passa al tema chiaro" : "Passa al tema scuro"}>
+    <Tooltip title={isDark ? "Tema chiaro" : "Tema scuro"}>
       <IconButton
         color="inherit"
         onClick={toggleMode}
         aria-label="toggle theme"
         data-testid="theme-toggle"
+        sx={{
+          color: "text.secondary",
+          transition: "color 0.2s, transform 0.2s",
+          "&:hover": { color: "text.primary", transform: "rotate(15deg)" },
+        }}
       >
-        {isDark ? <LightModeRoundedIcon /> : <DarkModeRoundedIcon />}
+        {isDark ? <LightModeRoundedIcon sx={{ fontSize: "1.2rem" }} /> : <DarkModeRoundedIcon sx={{ fontSize: "1.2rem" }} />}
       </IconButton>
     </Tooltip>
   );

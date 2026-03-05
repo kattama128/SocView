@@ -29,6 +29,7 @@ import {
   Stack,
   TextField,
   Toolbar,
+  Tooltip,
   Typography,
   useMediaQuery,
 } from "@mui/material";
@@ -47,7 +48,9 @@ import { canAccessAdmin, canAccessAnalytics } from "../services/roleUtils";
 import { ackAllNotifications, ackNotification, fetchNotifications, snoozeNotification } from "../services/alertsApi";
 import { NotificationEvent } from "../types/alerts";
 
-const sidebarWidth = 250;
+const SIDEBAR_WIDTH = 260;
+const APPBAR_HEIGHT = 64;
+const TRANSITION = "0.2s cubic-bezier(0.4, 0, 0.2, 1)";
 
 type MenuItemLink = {
   label: string;
@@ -62,6 +65,7 @@ export default function AppLayout() {
   const { user, logout } = useAuth();
   const { customers, selectedCustomer, selectedCustomerId, setSelectedCustomerId } = useCustomer();
   const theme = useTheme();
+  const isDark = theme.palette.mode === "dark";
   const isMobile = useMediaQuery(theme.breakpoints.down("lg"));
 
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
@@ -175,107 +179,188 @@ export default function AppLayout() {
     );
   }, [navigate, quickSearch]);
 
+  /* ─── Sidebar ─── */
   const drawerContent = (
     <Stack sx={{ height: "100%", color: "text.primary" }}>
-      <Box sx={{ px: 2.4, py: 2.6 }}>
-        <Stack direction="row" spacing={1.4} alignItems="center">
+      {/* Brand */}
+      <Box sx={{ px: 2.5, pt: 2.5, pb: 2 }}>
+        <Stack direction="row" spacing={1.5} alignItems="center">
           <Box
             sx={{
-              width: 38,
-              height: 38,
-              borderRadius: 2.2,
+              width: 36,
+              height: 36,
+              borderRadius: 2,
               display: "grid",
               placeItems: "center",
-              background: "linear-gradient(160deg, rgba(59,130,246,0.85), rgba(34,197,94,0.72))",
-              boxShadow: "0 10px 24px rgba(37,99,235,0.35)",
+              background: `linear-gradient(135deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
+              boxShadow: `0 6px 20px ${alpha(theme.palette.primary.main, 0.25)}`,
+              flexShrink: 0,
             }}
           >
-            <ShieldOutlinedIcon fontSize="small" sx={{ color: theme.palette.primary.contrastText }} />
+            <ShieldOutlinedIcon sx={{ color: "#fff", fontSize: 20 }} />
           </Box>
-          <Box>
-            <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>SocView</Typography>
-            <Typography sx={{ fontSize: 12, color: "text.secondary" }}>SOC Operations Platform</Typography>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ fontWeight: 700, fontSize: "1rem", lineHeight: 1.2, letterSpacing: "-0.02em" }}>
+              SocView
+            </Typography>
+            <Typography sx={{ fontSize: "0.6875rem", color: "text.secondary", fontWeight: 500 }}>
+              SOC Operations Platform
+            </Typography>
           </Box>
         </Stack>
       </Box>
 
-      <Box sx={{ px: 2.4, pb: 2.2 }}>
+      {/* Customer context */}
+      <Box sx={{ px: 2.5, pb: 2 }}>
         <Box
           sx={{
             borderRadius: 2,
-            p: 1.3,
-            border: `1px solid ${alpha(theme.palette.info.light, 0.35)}`,
-            background: alpha(theme.palette.info.main, 0.08),
+            p: 1.5,
+            border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+            background: alpha(theme.palette.primary.main, 0.05),
+            transition: `background ${TRANSITION}`,
           }}
         >
-          <Typography sx={{ fontSize: 12, fontWeight: 600, color: "text.secondary" }}>Contesto cliente</Typography>
-          <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+          <Typography sx={{ fontSize: "0.6875rem", fontWeight: 600, color: "text.secondary", mb: 0.25 }}>
+            Contesto cliente
+          </Typography>
+          <Typography sx={{ fontSize: "0.8125rem", fontWeight: 600 }}>
             {selectedCustomer ? `${selectedCustomer.name} (${selectedCustomer.code})` : "Tutti i clienti"}
           </Typography>
         </Box>
       </Box>
 
-      <List sx={{ px: 1.4 }}>
-        {items.map((item) => {
-          const selected = !item.disabled && (location.pathname === item.to || location.pathname.startsWith(`${item.to}/`));
-          return (
-            <ListItemButton
-              key={item.to}
-              component={Link}
-              to={item.to}
-              disabled={item.disabled}
-              onClick={() => setMobileDrawerOpen(false)}
-              selected={selected}
-              sx={{
-                mb: 0.6,
-                borderRadius: 2,
-                color: item.disabled ? "text.disabled" : selected ? theme.palette.primary.light : "text.secondary",
-                border: `1px solid ${selected ? alpha(theme.palette.primary.main, 0.4) : "transparent"}`,
-                background: selected
-                  ? "linear-gradient(100deg, rgba(59,130,246,0.18), rgba(34,197,94,0.12))"
-                  : item.disabled
-                    ? alpha(theme.palette.common.white, 0.02)
-                    : "transparent",
-                "&:hover": {
+      {/* Navigation */}
+      <Box sx={{ px: 1.5, flex: 1, overflowY: "auto" }}>
+        <Typography
+          sx={{
+            fontSize: "0.625rem",
+            fontWeight: 600,
+            color: "text.secondary",
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+            px: 1,
+            mb: 0.75,
+          }}
+        >
+          Menu
+        </Typography>
+        <List disablePadding>
+          {items.map((item) => {
+            const selected = !item.disabled && (location.pathname === item.to || location.pathname.startsWith(`${item.to}/`));
+            return (
+              <ListItemButton
+                key={item.to}
+                component={Link}
+                to={item.to}
+                disabled={item.disabled}
+                onClick={() => setMobileDrawerOpen(false)}
+                selected={selected}
+                sx={{
+                  mb: 0.4,
+                  borderRadius: 2,
+                  py: 0.85,
+                  color: item.disabled ? "text.disabled" : selected ? theme.palette.primary.main : "text.secondary",
+                  fontWeight: selected ? 600 : 500,
                   background: selected
-                    ? "linear-gradient(100deg, rgba(59,130,246,0.22), rgba(34,197,94,0.14))"
-                    : alpha(theme.palette.common.white, 0.03),
-                },
-              }}
-            >
-              <ListItemIcon sx={{ color: "inherit", minWidth: 34 }}>{item.icon}</ListItemIcon>
-              <ListItemText
-                primary={item.label}
-                primaryTypographyProps={{
-                  fontSize: 14,
-                  fontWeight: selected ? 650 : 500,
+                    ? alpha(theme.palette.primary.main, isDark ? 0.1 : 0.06)
+                    : "transparent",
+                  border: "1px solid transparent",
+                  transition: `all ${TRANSITION}`,
+                  "&:hover": {
+                    background: selected
+                      ? alpha(theme.palette.primary.main, isDark ? 0.14 : 0.08)
+                      : alpha(theme.palette.text.primary, 0.04),
+                  },
                 }}
-                secondary={
-                  item.disabled ? (
-                    <Typography variant="caption" sx={{ color: "text.disabled" }}>
-                      Coming soon
-                    </Typography>
-                  ) : null
-                }
-              />
-            </ListItemButton>
-          );
-        })}
-      </List>
+              >
+                <ListItemIcon
+                  sx={{
+                    color: "inherit",
+                    minWidth: 36,
+                    "& .MuiSvgIcon-root": { fontSize: "1.25rem" },
+                  }}
+                >
+                  {item.icon}
+                </ListItemIcon>
+                <ListItemText
+                  primary={item.label}
+                  primaryTypographyProps={{
+                    fontSize: "0.8125rem",
+                    fontWeight: selected ? 600 : 500,
+                  }}
+                  secondary={
+                    item.disabled ? (
+                      <Typography variant="caption" sx={{ color: "text.disabled", fontSize: "0.625rem" }}>
+                        Coming soon
+                      </Typography>
+                    ) : null
+                  }
+                />
+                {selected && (
+                  <Box
+                    sx={{
+                      width: 3,
+                      height: 20,
+                      borderRadius: 999,
+                      background: theme.palette.primary.main,
+                      ml: 1,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+              </ListItemButton>
+            );
+          })}
+        </List>
+      </Box>
 
-      <Box sx={{ flexGrow: 1 }} />
+      {/* Status Bar */}
       <StatusBar />
 
+      {/* User info */}
       <Box
         sx={{
-          px: 2.4,
-          py: 1.8,
+          px: 2.5,
+          py: 1.5,
           borderTop: "1px solid var(--border-subtle)",
-          background: alpha(theme.palette.background.paper, 0.64),
+          display: "flex",
+          alignItems: "center",
+          gap: 1.5,
         }}
       >
-        <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{user?.username}</Typography>
-        <Typography sx={{ fontSize: 12, color: "text.secondary" }}>{user?.role}</Typography>
+        <Box
+          sx={{
+            width: 32,
+            height: 32,
+            borderRadius: "50%",
+            display: "grid",
+            placeItems: "center",
+            background: alpha(theme.palette.primary.main, 0.1),
+            color: theme.palette.primary.main,
+            fontSize: "0.8125rem",
+            fontWeight: 700,
+            flexShrink: 0,
+          }}
+        >
+          {user?.username?.charAt(0).toUpperCase() ?? "U"}
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography sx={{ fontSize: "0.8125rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {user?.username}
+          </Typography>
+          <Typography sx={{ fontSize: "0.6875rem", color: "text.secondary" }}>{user?.role}</Typography>
+        </Box>
+        <Tooltip title="Logout">
+          <IconButton
+            size="small"
+            onClick={() => void handleLogout()}
+            aria-label="logout"
+            sx={{ color: "text.secondary" }}
+          >
+            <LogoutIcon sx={{ fontSize: "1.1rem" }} />
+          </IconButton>
+        </Tooltip>
       </Box>
     </Stack>
   );
@@ -288,22 +373,22 @@ export default function AppLayout() {
         color: "text.primary",
       }}
     >
+      {/* AppBar */}
       <AppBar
         position="fixed"
         elevation={0}
         sx={{
           zIndex: (muiTheme) => muiTheme.zIndex.drawer + 1,
-          background: "var(--surface-2)",
+          background: isDark ? "rgba(12,20,37,0.8)" : "rgba(255,255,255,0.85)",
           borderBottom: "1px solid var(--border-subtle)",
-          backdropFilter: "blur(12px)",
-          boxShadow: "var(--shadow-2)",
-          ml: { lg: `${sidebarWidth}px` },
-          width: { lg: `calc(100% - ${sidebarWidth}px)` },
+          backdropFilter: "blur(16px)",
+          ml: { lg: `${SIDEBAR_WIDTH}px` },
+          width: { lg: `calc(100% - ${SIDEBAR_WIDTH}px)` },
         }}
       >
-        <Toolbar sx={{ gap: 1.5, minHeight: 72 }}>
+        <Toolbar sx={{ gap: 1, minHeight: `${APPBAR_HEIGHT}px !important`, px: { xs: 1.5, md: 2.5 } }}>
           {isMobile ? (
-            <IconButton color="inherit" onClick={() => setMobileDrawerOpen(true)}>
+            <IconButton color="inherit" onClick={() => setMobileDrawerOpen(true)} sx={{ mr: 0.5 }}>
               <MenuIcon />
             </IconButton>
           ) : null}
@@ -319,7 +404,15 @@ export default function AppLayout() {
                 handleQuickSearchSubmit();
               }
             }}
-            sx={{ minWidth: { xs: 140, md: 300 }, flexGrow: 1, maxWidth: 560 }}
+            sx={{
+              minWidth: { xs: 120, md: 280 },
+              flexGrow: 1,
+              maxWidth: 480,
+              "& .MuiOutlinedInput-root": {
+                height: 38,
+                fontSize: "0.8125rem",
+              },
+            }}
             InputProps={{
               startAdornment: (
                 <InputAdornment position="start">
@@ -331,6 +424,8 @@ export default function AppLayout() {
             }}
           />
 
+          <Box sx={{ flex: 1 }} />
+
           <TextField
             select
             size="small"
@@ -339,7 +434,13 @@ export default function AppLayout() {
               const next = event.target.value;
               setSelectedCustomerId(next === "all" ? null : Number(next));
             }}
-            sx={{ minWidth: 230 }}
+            sx={{
+              minWidth: 200,
+              "& .MuiOutlinedInput-root": {
+                height: 38,
+                fontSize: "0.8125rem",
+              },
+            }}
           >
             <MenuItem value="all">Tutti i clienti</MenuItem>
             {customers.map((customer) => (
@@ -349,53 +450,69 @@ export default function AppLayout() {
             ))}
           </TextField>
 
-          <IconButton
-            color="inherit"
-            onClick={() => setNotificationDrawerOpen(true)}
-            aria-label="notifiche"
-            data-testid="notification-bell"
-          >
-            <Badge badgeContent={unreadCount} color="error">
-              <NotificationsIcon />
-            </Badge>
-          </IconButton>
+          <Tooltip title="Notifiche">
+            <IconButton
+              color="inherit"
+              onClick={() => setNotificationDrawerOpen(true)}
+              aria-label="notifiche"
+              data-testid="notification-bell"
+              sx={{
+                color: "text.secondary",
+                transition: `color ${TRANSITION}`,
+                "&:hover": { color: "text.primary" },
+              }}
+            >
+              <Badge
+                badgeContent={unreadCount}
+                color="error"
+                sx={{ "& .MuiBadge-badge": { fontSize: "0.65rem", minWidth: 18, height: 18 } }}
+              >
+                <NotificationsIcon sx={{ fontSize: "1.3rem" }} />
+              </Badge>
+            </IconButton>
+          </Tooltip>
 
           <ThemeToggle />
 
-          <Chip
-            label={selectedCustomer ? `Cliente: ${selectedCustomer.code}` : "Cliente: ALL"}
-            size="small"
-            sx={{
-              color: theme.palette.primary.light,
-              border: `1px solid ${alpha(theme.palette.primary.main, 0.35)}`,
-              background: alpha(theme.palette.primary.main, 0.12),
-            }}
-          />
-
-          <IconButton color="inherit" onClick={() => void handleLogout()} aria-label="logout" data-testid="logout-button">
-            <LogoutIcon />
-          </IconButton>
+          <Tooltip title="Logout">
+            <IconButton
+              color="inherit"
+              onClick={() => void handleLogout()}
+              aria-label="logout"
+              data-testid="logout-button"
+              sx={{
+                display: { xs: "inline-flex", lg: "none" },
+                color: "text.secondary",
+                transition: `color ${TRANSITION}`,
+                "&:hover": { color: "text.primary" },
+              }}
+            >
+              <LogoutIcon sx={{ fontSize: "1.2rem" }} />
+            </IconButton>
+          </Tooltip>
         </Toolbar>
       </AppBar>
 
+      {/* Sidebar drawer */}
       <Drawer
         variant={isMobile ? "temporary" : "permanent"}
         open={isMobile ? mobileDrawerOpen : true}
         onClose={() => setMobileDrawerOpen(false)}
         ModalProps={{ keepMounted: true }}
         sx={{
-          width: sidebarWidth,
+          width: SIDEBAR_WIDTH,
           flexShrink: 0,
           [`& .MuiDrawer-paper`]: {
-            width: sidebarWidth,
+            width: SIDEBAR_WIDTH,
             boxSizing: "border-box",
-            borderRight: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+            borderRight: `1px solid var(--border-subtle)`,
           },
         }}
       >
         {drawerContent}
       </Drawer>
 
+      {/* Notification drawer */}
       <NotificationDrawer
         open={notificationDrawerOpen}
         notifications={notifications}
@@ -410,6 +527,7 @@ export default function AppLayout() {
         onSnooze={handleSnoozeNotification}
       />
 
+      {/* Critical notification popup */}
       <Snackbar
         open={Boolean(popupNotification)}
         autoHideDuration={8000}
@@ -420,7 +538,7 @@ export default function AppLayout() {
           severity="error"
           variant="filled"
           onClose={() => setPopupNotification(null)}
-          sx={{ width: "100%", cursor: "pointer" }}
+          sx={{ width: "100%", cursor: "pointer", borderRadius: 2.5 }}
           onClick={() => {
             if (popupNotification) {
               navigate(`/alerts/${popupNotification.alert}`);
@@ -432,12 +550,13 @@ export default function AppLayout() {
         </Alert>
       </Snackbar>
 
+      {/* Main content */}
       <Box
         component="main"
         sx={{
           flexGrow: 1,
           px: { xs: 2, md: 3 },
-          pt: { xs: 11, md: 12 },
+          pt: `${APPBAR_HEIGHT + 24}px`,
           pb: 3,
           minHeight: "100vh",
           maxHeight: "100vh",
