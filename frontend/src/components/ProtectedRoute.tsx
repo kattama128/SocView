@@ -130,7 +130,6 @@ export default function ProtectedRoute() {
 
   if (mustSwitchToTenant) {
     if (tenantRedirectFailed) {
-      const fallbackTarget = buildTenantRedirectUrl("http://tenant1.localhost/tenant", location.pathname, location.search);
       return (
         <Stack alignItems="center" justifyContent="center" spacing={2} sx={{ minHeight: "100vh", px: 2 }}>
           <Alert severity="warning" sx={{ maxWidth: 720 }}>
@@ -140,8 +139,8 @@ export default function ProtectedRoute() {
             <Button variant="contained" onClick={() => window.location.reload()}>
               Riprova
             </Button>
-            <Button variant="outlined" onClick={() => window.location.assign(fallbackTarget)}>
-              Apri tenant1
+            <Button variant="outlined" onClick={() => window.location.assign("/home")}>
+              Torna alla Home
             </Button>
           </Stack>
         </Stack>

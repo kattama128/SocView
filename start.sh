@@ -3,7 +3,7 @@ set -eu
 
 # One-click local startup script for SocView.
 # It downloads/builds dependencies, starts all services, runs migrations,
-# seeds demo data and opens the application.
+# and opens the application.
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -75,9 +75,6 @@ log "Eseguo migrazioni shared + tenant..."
 $COMPOSE_CMD exec -T backend python manage.py migrate_schemas --shared --noinput
 $COMPOSE_CMD exec -T backend python manage.py migrate_schemas --tenant --noinput
 
-log "Seed demo (idempotente)..."
-$COMPOSE_CMD exec -T backend python manage.py seed_demo
-
 log "Verifica readiness..."
 if ! wait_for_http "http://localhost/readyz" 45 2; then
   fail "Servizio non ready su /readyz."
@@ -93,11 +90,4 @@ log ""
 log "SocView avviato."
 log "URL principali:"
 log "- Public:   http://localhost"
-log "- Tenant 1: http://tenant1.localhost"
 log "- Swagger:  http://localhost/api/docs/"
-log ""
-log "Credenziali demo:"
-log "- admin / Admin123!"
-log "- manager / Manager123!"
-log "- analyst / Analyst123!"
-log "- readonly / ReadOnly123!"

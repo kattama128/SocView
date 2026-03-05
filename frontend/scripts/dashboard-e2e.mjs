@@ -1,8 +1,8 @@
 import { chromium } from "playwright";
 
-const baseUrl = process.env.BASE_URL || "http://tenant1.localhost";
-const username = process.env.QA_USERNAME || "admin";
-const password = process.env.QA_PASSWORD || "Admin123!";
+const baseUrl = process.env.BASE_URL || "http://localhost";
+const username = process.env.QA_USERNAME || "";
+const password = process.env.QA_PASSWORD || "";
 
 const issues = [];
 const record = (title, detail) => {
@@ -34,6 +34,9 @@ const readRowsChip = async (page) => {
 };
 
 const run = async () => {
+  if (!username || !password) {
+    throw new Error("Imposta QA_USERNAME e QA_PASSWORD prima di eseguire dashboard-e2e.");
+  }
   const browser = await chromium.launch();
   const page = await browser.newPage();
   page.setDefaultTimeout(10000);

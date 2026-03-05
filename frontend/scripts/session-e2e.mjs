@@ -1,8 +1,8 @@
 import { chromium } from "playwright";
 
-const baseUrl = process.env.BASE_URL || "http://tenant1.localhost";
-const username = process.env.QA_USERNAME || "admin";
-const password = process.env.QA_PASSWORD || "Admin123!";
+const baseUrl = process.env.BASE_URL || "http://localhost";
+const username = process.env.QA_USERNAME || "";
+const password = process.env.QA_PASSWORD || "";
 const hostHeader = process.env.QA_HOST_HEADER || "";
 
 const issues = [];
@@ -22,6 +22,9 @@ const step = async (title, fn) => {
 };
 
 const run = async () => {
+  if (!username || !password) {
+    throw new Error("Imposta QA_USERNAME e QA_PASSWORD prima di eseguire session-e2e.");
+  }
   const browser = await chromium.launch();
   const context = await browser.newContext(
     hostHeader

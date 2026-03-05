@@ -1,20 +1,20 @@
 import { chromium } from "playwright";
 
-export const baseUrl = process.env.BASE_URL || "http://tenant1.localhost";
+export const baseUrl = process.env.BASE_URL || "http://localhost";
 export const hostHeader = process.env.QA_HOST_HEADER || "";
 
 export const credentials = {
   admin: {
-    username: process.env.QA_USERNAME_ADMIN || process.env.QA_USERNAME || "admin",
-    password: process.env.QA_PASSWORD_ADMIN || process.env.QA_PASSWORD || "Admin123!",
+    username: process.env.QA_USERNAME_ADMIN || process.env.QA_USERNAME || "",
+    password: process.env.QA_PASSWORD_ADMIN || process.env.QA_PASSWORD || "",
   },
   manager: {
-    username: process.env.QA_USERNAME_MANAGER || "manager",
-    password: process.env.QA_PASSWORD_MANAGER || "Manager123!",
+    username: process.env.QA_USERNAME_MANAGER || "",
+    password: process.env.QA_PASSWORD_MANAGER || "",
   },
   analyst: {
-    username: process.env.QA_USERNAME_ANALYST || "analyst",
-    password: process.env.QA_PASSWORD_ANALYST || "Analyst123!",
+    username: process.env.QA_USERNAME_ANALYST || "",
+    password: process.env.QA_PASSWORD_ANALYST || "",
   },
 };
 
@@ -57,6 +57,9 @@ export async function login(page, role = "admin") {
   const creds = credentials[role];
   if (!creds) {
     throw new Error(`Ruolo login non supportato: ${role}`);
+  }
+  if (!creds.username || !creds.password) {
+    throw new Error(`Credenziali mancanti per ruolo ${role}. Imposta le variabili QA_USERNAME*/QA_PASSWORD*.`);
   }
   await page.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
   await page.getByLabel("Username").fill(creds.username);
