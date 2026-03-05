@@ -44,10 +44,13 @@ export async function fetchAlerts(filters: AlertFilters = {}): Promise<Alert[]> 
 }
 
 export async function fetchCustomers(isEnabled = true): Promise<CustomerSummary[]> {
-  const response = await api.get<CustomerSummary[]>("/alerts/customers/", {
+  const response = await api.get<CustomerSummary[] | { results: CustomerSummary[] }>("/alerts/customers/", {
     params: { is_enabled: isEnabled ? "true" : undefined },
   });
-  return response.data;
+  if (Array.isArray(response.data)) {
+    return response.data;
+  }
+  return response.data.results ?? [];
 }
 
 export async function fetchCustomersOverview(ordering = "name", isEnabled = true): Promise<CustomerOverview[]> {
@@ -186,10 +189,13 @@ export async function fetchUsers(): Promise<UserSummary[]> {
 }
 
 export async function fetchAuditLogs(alertId?: string): Promise<AuditLog[]> {
-  const response = await api.get<AuditLog[]>("/alerts/audit-logs/", {
+  const response = await api.get<AuditLog[] | { results: AuditLog[] }>("/alerts/audit-logs/", {
     params: alertId ? { alert_id: alertId } : undefined,
   });
-  return response.data;
+  if (Array.isArray(response.data)) {
+    return response.data;
+  }
+  return response.data.results ?? [];
 }
 
 export async function changeAlertState(alertId: string, stateId: number): Promise<Alert> {
