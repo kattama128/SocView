@@ -748,7 +748,7 @@ export default function TenantPage() {
                               size="small"
                               sx={{
                                 backgroundColor: tag.color || undefined,
-                                color: tag.color ? "#fff" : undefined,
+                                color: tag.color ? "common.white" : undefined,
                               }}
                             />
                           ))}

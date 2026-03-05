@@ -2,8 +2,10 @@ import api from "./api";
 import {
   ConnectionTestResult,
   IngestionRun,
+  SourceErrorLogEntry,
   Source,
   SourceCapabilitiesResponse,
+  SourceStats,
   SourceWritePayload,
 } from "../types/ingestion";
 
@@ -60,5 +62,15 @@ export async function fetchIngestionRuns(sourceId?: number): Promise<IngestionRu
   const response = await api.get<IngestionRun[]>("/ingestion/runs/", {
     params: sourceId ? { source_id: sourceId } : undefined,
   });
+  return response.data;
+}
+
+export async function fetchSourceStats(sourceId: number): Promise<SourceStats> {
+  const response = await api.get<SourceStats>(`/ingestion/sources/${sourceId}/stats/`);
+  return response.data;
+}
+
+export async function fetchSourceErrorLog(sourceId: number): Promise<SourceErrorLogEntry[]> {
+  const response = await api.get<SourceErrorLogEntry[]>(`/ingestion/sources/${sourceId}/error-log/`);
   return response.data;
 }

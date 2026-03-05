@@ -14,6 +14,10 @@ from tenant_data.search.backends import (
 
 def search_alerts(request_data: SearchRequest) -> SearchResult:
     backend = resolve_search_backend()
+    if backend.name != "postgres" and (
+        request_data.assigned_to_id is not None or request_data.in_state_since is not None
+    ):
+        backend = PostgresSearchBackend()
     try:
         return backend.search(request_data)
     except Exception:

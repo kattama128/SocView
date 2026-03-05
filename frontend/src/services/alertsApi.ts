@@ -12,12 +12,18 @@ import {
   CustomerOverview,
   CustomerSummary,
   NotificationListResponse,
+  NotificationPreferences,
+  RelatedAlert,
   SavedSearch,
   SearchRequest,
   SearchResponse,
+  SlaConfig,
   SourceFieldSchema,
   Tag,
   UserSummary,
+  ExportPreviewResponse,
+  BulkActionRequest,
+  BulkActionResponse,
 } from "../types/alerts";
 
 export type AlertFilters = {
@@ -64,6 +70,38 @@ export async function updateCustomerSettings(
   payload: CustomerSettingsUpdatePayload,
 ): Promise<CustomerSettingsResponse> {
   const response = await api.patch<CustomerSettingsResponse>(`/alerts/customers/${customerId}/settings/`, payload);
+  return response.data;
+}
+
+export type CustomerMembershipRecord = {
+  id: number;
+  user_id: number;
+  username: string;
+  email: string;
+  scope: "viewer" | "triage" | "manager";
+  is_active: boolean;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function fetchCustomerMemberships(customerId: number): Promise<CustomerMembershipRecord[]> {
+  const response = await api.get<CustomerMembershipRecord[]>(`/alerts/customers/${customerId}/memberships/`);
+  return response.data;
+}
+
+export async function upsertCustomerMembership(
+  customerId: number,
+  payload: { user_id: number; scope: "viewer" | "triage" | "manager"; is_active?: boolean; notes?: string },
+): Promise<CustomerMembershipRecord[]> {
+  const response = await api.post<CustomerMembershipRecord[]>(`/alerts/customers/${customerId}/memberships/`, payload);
+  return response.data;
+}
+
+export async function deleteCustomerMembership(customerId: number, userId: number): Promise<CustomerMembershipRecord[]> {
+  const response = await api.delete<CustomerMembershipRecord[]>(`/alerts/customers/${customerId}/memberships/`, {
+    data: { user_id: userId },
+  });
   return response.data;
 }
 
@@ -155,7 +193,7 @@ export async function fetchAuditLogs(alertId?: string): Promise<AuditLog[]> {
 }
 
 export async function changeAlertState(alertId: string, stateId: number): Promise<Alert> {
-  const response = await api.post<Alert>(`/alerts/alerts/${alertId}/change-state/`, { state_id: stateId });
+  const response = await api.patch<Alert>(`/alerts/alerts/${alertId}/change-state/`, { state_id: stateId });
   return response.data;
 }
 
@@ -200,6 +238,21 @@ export async function fetchAlertTimeline(alertId: string): Promise<AlertTimeline
   return response.data;
 }
 
+export async function fetchRelatedAlerts(alertId: string): Promise<RelatedAlert[]> {
+  const response = await api.get<RelatedAlert[]>(`/alerts/alerts/${alertId}/related/`);
+  return response.data;
+}
+
+export async function updateAlert(alertId: string, payload: Partial<Alert>): Promise<Alert> {
+  const response = await api.patch<Alert>(`/alerts/alerts/${alertId}/`, payload);
+  return response.data;
+}
+
+export async function fetchSlaConfig(): Promise<SlaConfig[]> {
+  const response = await api.get<SlaConfig[]>("/alerts/sla-config/");
+  return response.data;
+}
+
 export async function exportAlertsConfigurable(
   payload: SearchRequest & { columns: string[]; all_results?: boolean },
 ): Promise<Blob> {
@@ -207,6 +260,18 @@ export async function exportAlertsConfigurable(
     responseType: "blob",
   });
   return response.data as Blob;
+}
+
+export async function exportAlertsPreviewConfigurable(
+  payload: SearchRequest & { columns: string[]; all_results?: boolean; preview: true; limit?: number },
+): Promise<ExportPreviewResponse> {
+  const response = await api.post<ExportPreviewResponse>("/alerts/alerts/export-configurable/", payload);
+  return response.data;
+}
+
+export async function bulkAlertsAction(payload: BulkActionRequest): Promise<BulkActionResponse> {
+  const response = await api.post<BulkActionResponse>("/alerts/alerts/bulk-action/", payload);
+  return response.data;
 }
 
 export async function fetchNotifications(status: "all" | "unread" = "all", limit = 30): Promise<NotificationListResponse> {
@@ -222,6 +287,34 @@ export async function ackNotification(notificationId: number): Promise<void> {
 
 export async function ackAllNotifications(): Promise<void> {
   await api.post("/alerts/notifications/ack-all/", {});
+}
+
+export async function snoozeNotification(notificationId: number, payload: { minutes?: number; snooze_until?: string }): Promise<void> {
+  await api.post(`/alerts/notifications/${notificationId}/snooze/`, payload);
+}
+
+export async function fetchNotificationPreferences(): Promise<NotificationPreferences> {
+  const response = await api.get<NotificationPreferences>("/alerts/notification-preferences/");
+  return response.data;
+}
+
+export async function updateNotificationPreferences(
+  payload: Partial<NotificationPreferences>,
+): Promise<NotificationPreferences> {
+  const response = await api.patch<NotificationPreferences>("/alerts/notification-preferences/", payload);
+  return response.data;
+}
+
+export async function registerPushSubscription(payload: {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}): Promise<void> {
+  await api.post("/alerts/push-subscriptions/", payload);
+}
+
+export async function fetchWebSocketToken(): Promise<string> {
+  const response = await api.get<{ access: string }>("/auth/ws-token/");
+  return response.data.access;
 }
 
 export async function createState(payload: Partial<AlertState>): Promise<AlertState> {

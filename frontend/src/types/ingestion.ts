@@ -83,6 +83,8 @@ export type Source = {
   type: SourceType;
   is_enabled: boolean;
   severity_map: Record<string, unknown>;
+  schedule_cron: string | null;
+  schedule_interval_minutes: number | null;
   config: SourceConfig;
   dedup_policy: DedupPolicy;
   alert_type_rules: SourceAlertTypeRule[];
@@ -100,6 +102,8 @@ export type SourceWritePayload = {
   type: SourceType;
   is_enabled: boolean;
   severity_map: Record<string, unknown>;
+  schedule_cron?: string | null;
+  schedule_interval_minutes?: number | null;
   alert_type_rules?: Array<{
     id?: number;
     alert_name: string;
@@ -145,9 +149,29 @@ export type IngestionRun = {
   created_count: number;
   updated_count: number;
   error_count: number;
-  error_detail: string;
+  error_message: string;
+  error_detail: Record<string, unknown> | null;
   metadata: Record<string, unknown>;
   events: IngestionEventLog[];
+};
+
+export type SourceStats = {
+  last_run_at: string | null;
+  last_run_status: "success" | "error" | "partial" | null;
+  runs_today: number;
+  records_today: number;
+  error_rate_7d: number;
+  avg_duration_seconds: number | null;
+};
+
+export type SourceErrorLogEntry = {
+  id: number;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  error_message: string;
+  error_detail: Record<string, unknown> | null;
 };
 
 export type ConnectionTestResult = {

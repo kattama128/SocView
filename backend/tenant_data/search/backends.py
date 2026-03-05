@@ -13,6 +13,7 @@ from django.utils.timezone import now
 from django.db import connection
 from django.contrib.postgres.search import SearchQuery, SearchVector
 
+from tenant_data.filters import AbstractBaseFilter
 from tenant_data.customer_scoping import get_enabled_source_names_for_customer
 from tenant_data.models import Alert
 
@@ -31,6 +32,26 @@ ALLOWED_ORDERINGS = {
     "created_at",
     "updated_at",
 }
+
+
+def _normalize_ordering_terms(ordering_value: str | None, *, limit: int = 2) -> list[str]:
+    raw = (ordering_value or "").strip()
+    if not raw:
+        return ["-event_timestamp"]
+
+    terms = [item.strip() for item in raw.split(",") if item.strip()]
+    normalized: list[str] = []
+    used_fields: set[str] = set()
+    for term in terms:
+        field = term.lstrip("-")
+        if field not in ALLOWED_ORDERINGS or field in used_fields:
+            continue
+        used_fields.add(field)
+        normalized.append(f"-{field}" if term.startswith("-") else field)
+        if len(normalized) >= limit:
+            break
+
+    return normalized or ["-event_timestamp"]
 
 
 def _strip_array_tokens(path: str) -> list[str]:
@@ -218,6 +239,8 @@ class SearchRequest:
     event_timestamp_to: datetime | None = None
     is_active: bool | None = None
     dynamic_filters: list[dict[str, Any]] | None = None
+    assigned_to_id: int | None = None
+    in_state_since: datetime | None = None
     ordering: str = "-event_timestamp"
     page: int = 1
     page_size: int = DEFAULT_PAGE_SIZE
@@ -302,6 +325,12 @@ class PostgresSearchBackend(BaseSearchBackend):
         if request_data.is_active is not None:
             queryset = queryset.filter(current_state__is_final=(request_data.is_active is False))
 
+        if request_data.assigned_to_id is not None:
+            queryset = queryset.filter(assignment__assigned_to_id=request_data.assigned_to_id)
+
+        if request_data.in_state_since is not None:
+            queryset = AbstractBaseFilter.annotate_state_since(queryset).filter(state_since__lte=request_data.in_state_since)
+
         if request_data.text:
             text_value = request_data.text.strip()
             if text_value:
@@ -360,12 +389,8 @@ class PostgresSearchBackend(BaseSearchBackend):
                 return SearchResult(alert_ids=[], total=0, backend=self.name)
             queryset = queryset.filter(id__in=filtered_ids)
 
-        ordering = request_data.ordering or "-event_timestamp"
-        normalized = ordering.lstrip("-")
-        if normalized not in ALLOWED_ORDERINGS:
-            ordering = "-event_timestamp"
-
-        queryset = queryset.order_by(ordering, "-id")
+        orderings = _normalize_ordering_terms(request_data.ordering, limit=2)
+        queryset = queryset.order_by(*orderings, "-id")
 
         total = queryset.count()
         page = max(1, int(request_data.page or 1))
@@ -648,22 +673,26 @@ class ElasticSearchBackend(BaseSearchBackend):
         for filter_item in request_data.dynamic_filters or []:
             query_bool["filter"].append(self._dynamic_clause(filter_item))
 
-        ordering = request_data.ordering or "-event_timestamp"
-        ordering_field = ordering.lstrip("-")
-        if ordering_field not in ALLOWED_ORDERINGS:
-            ordering_field = "event_timestamp"
-            ordering = "-event_timestamp"
-
-        sort_direction = "desc" if ordering.startswith("-") else "asc"
+        orderings = _normalize_ordering_terms(request_data.ordering, limit=2)
         page = max(1, int(request_data.page or 1))
         page_size = max(1, min(int(request_data.page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
         from_index = (page - 1) * page_size
+
+        sort_payload = []
+        for ordering in orderings:
+            sort_payload.append(
+                {
+                    ordering.lstrip("-"): {
+                        "order": "desc" if ordering.startswith("-") else "asc",
+                    }
+                }
+            )
 
         payload = {
             "from": from_index,
             "size": page_size,
             "query": {"bool": query_bool},
-            "sort": [{ordering_field: {"order": sort_direction}}, {"id": {"order": "desc"}}],
+            "sort": [*sort_payload, {"id": {"order": "desc"}}],
             "_source": ["id"],
         }
 

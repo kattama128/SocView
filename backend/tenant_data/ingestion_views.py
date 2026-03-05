@@ -1,6 +1,8 @@
 import time
+from datetime import timedelta
 
 from django.core.cache import cache
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import permissions, serializers, status, viewsets
@@ -13,7 +15,12 @@ from core.throttling import WebhookRateThrottle
 from tenant_data.audit import create_audit_log
 from tenant_data.ingestion.parser import parse_parser_config_text
 from tenant_data.ingestion.service import run_ingestion_for_source, test_source_connection
-from tenant_data.ingestion_serializers import IngestionRunSerializer, SourceSerializer
+from tenant_data.ingestion_serializers import (
+    IngestionRunSerializer,
+    SourceErrorLogSerializer,
+    SourceSerializer,
+    SourceStatsSerializer,
+)
 from tenant_data.models import IngestionRun, ParserDefinition, ParserRevision, Source, SourceConfig
 from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
 from tenant_data.rbac import (
@@ -71,11 +78,16 @@ class SourceViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         customer_id = self._parse_customer_id(self.request.query_params.get("customer_id"))
         scope = self.request.query_params.get("scope")
+        status_filter = (self.request.query_params.get("status") or "").strip().lower()
         if customer_id is not None:
             queryset = queryset.filter(customer_id=customer_id)
         elif scope != "all":
             queryset = queryset.filter(customer__isnull=True)
         queryset = filter_queryset_by_customer_access(queryset, self.request.user, include_null=True)
+        if status_filter == "active":
+            queryset = queryset.filter(is_enabled=True)
+        elif status_filter in {"inactive", "disabled"}:
+            queryset = queryset.filter(is_enabled=False)
         return queryset
 
     def perform_create(self, serializer):
@@ -304,6 +316,96 @@ class SourceViewSet(viewsets.ModelViewSet):
         )
 
         return Response({"task_id": task.id, "detail": "Ingestion avviata"}, status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(
+        request=None,
+        responses=SourceStatsSerializer,
+        tags=["Ingestion Sources"],
+    )
+    @action(detail=True, methods=["get"], url_path="stats")
+    def stats(self, request, pk=None):
+        source = self.get_object()
+        ensure_customer_capability(request.user, source.customer_id, CAP_MANAGE_SOURCES)
+
+        now = timezone.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = now - timedelta(days=7)
+
+        base_queryset = IngestionRun.objects.filter(source=source)
+        last_run = base_queryset.order_by("-started_at", "-id").first()
+
+        today_aggregates = base_queryset.filter(started_at__gte=day_start).aggregate(
+            runs_today=Count("id"),
+            records_today=Sum("processed_count"),
+        )
+        week_aggregates = base_queryset.filter(started_at__gte=week_start).aggregate(
+            total_runs_7d=Count("id"),
+            error_runs_7d=Count("id", filter=Q(status=IngestionRun.Status.ERROR)),
+        )
+        duration_aggregates = base_queryset.filter(started_at__gte=day_start).aggregate(
+            avg_duration_today=Avg(
+                ExpressionWrapper(
+                    F("finished_at") - F("started_at"),
+                    output_field=DurationField(),
+                ),
+                filter=Q(finished_at__isnull=False),
+            ),
+        )
+
+        total_runs_7d = int(week_aggregates.get("total_runs_7d") or 0)
+        error_runs_7d = int(week_aggregates.get("error_runs_7d") or 0)
+        error_rate_7d = float(error_runs_7d / total_runs_7d) if total_runs_7d else 0.0
+        avg_duration = duration_aggregates.get("avg_duration_today")
+        avg_duration_seconds = float(avg_duration.total_seconds()) if avg_duration is not None else None
+        last_run_status = getattr(last_run, "status", None)
+        if last_run_status not in {IngestionRun.Status.SUCCESS, IngestionRun.Status.ERROR, IngestionRun.Status.PARTIAL}:
+            last_run_status = None
+
+        payload = {
+            "last_run_at": getattr(last_run, "started_at", None),
+            "last_run_status": last_run_status,
+            "runs_today": int(today_aggregates.get("runs_today") or 0),
+            "records_today": int(today_aggregates.get("records_today") or 0),
+            "error_rate_7d": round(error_rate_7d, 4),
+            "avg_duration_seconds": round(avg_duration_seconds, 2) if avg_duration_seconds is not None else None,
+        }
+        serializer = SourceStatsSerializer(payload)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=None,
+        responses=SourceErrorLogSerializer(many=True),
+        tags=["Ingestion Sources"],
+    )
+    @action(detail=True, methods=["get"], url_path="error-log")
+    def error_log(self, request, pk=None):
+        source = self.get_object()
+        ensure_customer_capability(request.user, source.customer_id, CAP_MANAGE_SOURCES)
+
+        runs = (
+            IngestionRun.objects.filter(source=source, status=IngestionRun.Status.ERROR)
+            .order_by("-started_at", "-id")[:20]
+        )
+
+        response_payload = []
+        for run in runs:
+            duration_seconds = None
+            if run.finished_at:
+                duration_seconds = max((run.finished_at - run.started_at).total_seconds(), 0.0)
+            response_payload.append(
+                {
+                    "id": run.id,
+                    "status": run.status,
+                    "started_at": run.started_at,
+                    "finished_at": run.finished_at,
+                    "duration_seconds": round(duration_seconds, 2) if duration_seconds is not None else None,
+                    "error_message": run.error_message or "",
+                    "error_detail": run.error_detail,
+                }
+            )
+
+        serializer = SourceErrorLogSerializer(response_payload, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class IngestionRunViewSet(viewsets.ReadOnlyModelViewSet):

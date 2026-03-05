@@ -54,3 +54,19 @@ class UserDashboardPreference(models.Model):
 
     def __str__(self):
         return f"DashboardPreference({self.user.username})"
+
+
+class UserPreference(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="preferences")
+    key = models.CharField(max_length=120)
+    value = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = (("user", "key"),)
+        indexes = [
+            models.Index(fields=("user", "key"), name="userpref_user_key_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.key}"

@@ -29,7 +29,11 @@ const run = async () => {
 
     await step(`Management visibility (${testCase.role})`, async () => {
       await login(page, testCase.role);
-      await page.getByRole("button", { name: "Configura" }).waitFor();
+      if (testCase.role === "analyst") {
+        await page.getByRole("button", { name: "notifications" }).waitFor();
+      } else {
+        await page.getByRole("button", { name: "Configura" }).waitFor();
+      }
       await page.goto(`${baseUrl}/configurazione`, { waitUntil: "domcontentloaded" });
       await page.getByText("Management").first().waitFor();
 

@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import serializers
 
 from tenant_data.models import (
@@ -13,9 +14,13 @@ from tenant_data.models import (
     AuditLog,
     Comment,
     Customer,
+    CustomerMembership,
     CustomerSettings,
     NotificationEvent,
+    NotificationPreferences,
     NotificationRead,
+    PushSubscription,
+    SLAConfig,
     SavedSearch,
     Source,
     Tag,
@@ -137,6 +142,33 @@ class CustomerSettingsResponseSerializer(serializers.Serializer):
     updated_at = serializers.DateTimeField()
 
 
+class CustomerMembershipSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    email = serializers.CharField(source="user.email", read_only=True)
+
+    class Meta:
+        model = CustomerMembership
+        fields = (
+            "id",
+            "user_id",
+            "username",
+            "email",
+            "scope",
+            "is_active",
+            "notes",
+            "created_at",
+            "updated_at",
+        )
+
+
+class CustomerMembershipUpsertSerializer(serializers.Serializer):
+    user_id = serializers.PrimaryKeyRelatedField(source="user", queryset=User.objects.all())
+    scope = serializers.ChoiceField(choices=CustomerMembership.Scope.choices)
+    is_active = serializers.BooleanField(required=False, default=True)
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=255, default="")
+
+
 class TagSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tag
@@ -220,6 +252,7 @@ class AlertBaseSerializer(serializers.ModelSerializer):
     occurrence = AlertOccurrenceSerializer(read_only=True)
     assignment = AssignmentSerializer(read_only=True)
     tags = serializers.SerializerMethodField()
+    sla_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -236,6 +269,8 @@ class AlertBaseSerializer(serializers.ModelSerializer):
             "parsed_payload",
             "parsed_field_schema",
             "parse_error_detail",
+            "iocs",
+            "mitre_technique_id",
             "current_state",
             "current_state_detail",
             "is_active",
@@ -243,6 +278,7 @@ class AlertBaseSerializer(serializers.ModelSerializer):
             "occurrence",
             "assignment",
             "tags",
+            "sla_status",
             "created_at",
             "updated_at",
         )
@@ -253,6 +289,48 @@ class AlertBaseSerializer(serializers.ModelSerializer):
     def get_tags(self, obj) -> list[dict]:
         alert_tags = obj.alert_tags.select_related("tag")
         return TagSerializer([item.tag for item in alert_tags], many=True).data
+
+    def get_sla_status(self, obj):
+        cache_key = "_sla_config_map"
+        config_map = self.context.get(cache_key)
+        if config_map is None:
+            config_map = {item.severity: item for item in SLAConfig.objects.all()}
+            self.context[cache_key] = config_map
+
+        config = config_map.get(obj.severity)
+        if config is None:
+            return None
+
+        now = timezone.now()
+        elapsed_resolution_minutes = int((now - obj.created_at).total_seconds() // 60)
+        resolution_reference = now
+        if obj.current_state.is_final:
+            resolution_reference = obj.updated_at
+            elapsed_resolution_minutes = int((resolution_reference - obj.created_at).total_seconds() // 60)
+
+        assignment = getattr(obj, "assignment", None)
+        if assignment and assignment.assigned_to_id:
+            response_reference = assignment.updated_at
+        else:
+            response_reference = now
+        elapsed_response_minutes = int((response_reference - obj.created_at).total_seconds() // 60)
+
+        def _status(elapsed: int, target: int) -> str:
+            if target <= 0:
+                return "breached"
+            if elapsed >= target:
+                return "breached"
+            remaining = target - elapsed
+            if remaining <= int(target * 0.2):
+                return "warning"
+            return "ok"
+
+        remaining_response = config.response_minutes - elapsed_response_minutes
+        return {
+            "response": _status(elapsed_response_minutes, config.response_minutes),
+            "resolution": _status(elapsed_resolution_minutes, config.resolution_minutes),
+            "response_remaining_minutes": remaining_response,
+        }
 
 
 class AlertListSerializer(AlertBaseSerializer):
@@ -284,6 +362,20 @@ class AlertDetailSerializer(AlertBaseSerializer):
 
     class Meta(AlertBaseSerializer.Meta):
         fields = AlertBaseSerializer.Meta.fields + ("comments", "attachments")
+
+
+class RelatedAlertSerializer(serializers.ModelSerializer):
+    current_state_detail = AlertStateSerializer(source="current_state", read_only=True)
+
+    class Meta:
+        model = Alert
+        fields = ("id", "title", "severity", "created_at", "event_timestamp", "current_state_detail")
+
+
+class SLAConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SLAConfig
+        fields = ("id", "severity", "response_minutes", "resolution_minutes", "created_at", "updated_at")
 
 
 class StateChangeSerializer(serializers.Serializer):
@@ -389,6 +481,8 @@ class AlertSearchRequestSerializer(serializers.Serializer):
     event_timestamp_from = serializers.DateTimeField(required=False)
     event_timestamp_to = serializers.DateTimeField(required=False)
     is_active = serializers.BooleanField(required=False)
+    assignee = serializers.CharField(required=False, allow_blank=True)
+    in_state_since = serializers.DateTimeField(required=False)
     dynamic_filters = DynamicFilterSerializer(many=True, required=False)
     ordering = serializers.CharField(required=False, allow_blank=True, default="-event_timestamp")
     page = serializers.IntegerField(required=False, min_value=1, default=1)
@@ -398,10 +492,18 @@ class AlertSearchRequestSerializer(serializers.Serializer):
         attrs = super().validate(attrs)
         from_ts = attrs.get("event_timestamp_from")
         to_ts = attrs.get("event_timestamp_to")
+        assignee = (attrs.get("assignee") or "").strip()
         if from_ts and to_ts and from_ts > to_ts:
             raise serializers.ValidationError(
                 {"event_timestamp_to": "event_timestamp_to deve essere >= event_timestamp_from"}
             )
+        if assignee and assignee != "me":
+            try:
+                assignee_id = int(assignee)
+            except (TypeError, ValueError) as exc:
+                raise serializers.ValidationError({"assignee": "assignee deve essere 'me' o un id numerico"}) from exc
+            if assignee_id <= 0:
+                raise serializers.ValidationError({"assignee": "assignee deve essere 'me' o un id numerico"})
         return attrs
 
 
@@ -457,6 +559,58 @@ class SavedSearchSerializer(serializers.ModelSerializer):
 class ExportConfigurableRequestSerializer(AlertSearchRequestSerializer):
     columns = serializers.ListField(child=serializers.CharField(max_length=255), required=False, allow_empty=False)
     all_results = serializers.BooleanField(required=False, default=True)
+    preview = serializers.BooleanField(required=False, default=False)
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=100, default=5)
+
+
+class ExportPreviewResponseSerializer(serializers.Serializer):
+    count = serializers.IntegerField()
+    rows = serializers.ListField(child=serializers.DictField())
+    columns = serializers.ListField(child=serializers.CharField())
+
+
+class BulkActionRequestSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=("change_state", "assign", "add_tag"))
+    ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=False,
+    )
+    select_all = serializers.BooleanField(required=False, default=False)
+    filters = AlertSearchRequestSerializer(required=False)
+    state_id = serializers.PrimaryKeyRelatedField(queryset=AlertState.objects.all(), required=False)
+    assigned_to_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
+    tag_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=False,
+    )
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        action = attrs.get("action")
+        select_all = attrs.get("select_all", False)
+        ids = attrs.get("ids") or []
+        filters = attrs.get("filters")
+
+        if select_all and filters is None:
+            raise serializers.ValidationError({"filters": "filters è obbligatorio quando select_all=true"})
+        if not select_all and not ids:
+            raise serializers.ValidationError({"ids": "ids è obbligatorio quando select_all=false"})
+
+        if action == "change_state" and attrs.get("state_id") is None:
+            raise serializers.ValidationError({"state_id": "state_id è obbligatorio per change_state"})
+        if action == "assign" and "assigned_to_id" not in attrs:
+            raise serializers.ValidationError({"assigned_to_id": "assigned_to_id è obbligatorio per assign"})
+        if action == "add_tag" and not attrs.get("tag_ids"):
+            raise serializers.ValidationError({"tag_ids": "tag_ids è obbligatorio per add_tag"})
+
+        return attrs
+
+
+class BulkActionResultSerializer(serializers.Serializer):
+    updated = serializers.IntegerField()
+    errors = serializers.IntegerField()
 
 
 class AlertTimelineEventSerializer(serializers.Serializer):
@@ -484,6 +638,7 @@ class NotificationEventSerializer(serializers.ModelSerializer):
             "severity",
             "metadata",
             "is_active",
+            "snoozed_until",
             "is_read",
             "created_at",
             "updated_at",
@@ -503,6 +658,62 @@ class NotificationAckSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+
+
+class NotificationPreferencesSerializer(serializers.ModelSerializer):
+    customer_filter = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.objects.all(),
+        many=True,
+        required=False,
+    )
+
+    class Meta:
+        model = NotificationPreferences
+        fields = (
+            "min_severity",
+            "customer_filter",
+            "channels",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("created_at", "updated_at")
+
+    def validate_channels(self, value):
+        channels = value or {}
+        return {
+            "ui": bool(channels.get("ui", True)),
+            "email": bool(channels.get("email", False)),
+        }
+
+
+class NotificationSnoozeSerializer(serializers.Serializer):
+    snooze_until = serializers.DateTimeField(required=False, allow_null=True)
+    minutes = serializers.IntegerField(required=False, min_value=1, max_value=24 * 60)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if attrs.get("snooze_until") is None and attrs.get("minutes") is None:
+            raise serializers.ValidationError({"detail": "Specifica snooze_until oppure minutes"})
+        return attrs
+
+
+class PushSubscriptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PushSubscription
+        fields = ("id", "endpoint", "p256dh", "auth", "is_active", "created_at", "updated_at")
+        read_only_fields = ("id", "is_active", "created_at", "updated_at")
+
+
+class PushSubscriptionUpsertSerializer(serializers.Serializer):
+    endpoint = serializers.CharField()
+    keys = serializers.DictField(child=serializers.CharField(), required=True)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        keys = attrs.get("keys") or {}
+        if not keys.get("p256dh") or not keys.get("auth"):
+            raise serializers.ValidationError({"keys": "Chiavi push mancanti (p256dh/auth)"})
+        return attrs
 
 
 class AlertDetailFieldConfigSerializer(serializers.ModelSerializer):

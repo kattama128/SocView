@@ -31,6 +31,7 @@ export type UserAccount = {
   last_login: string | null;
   date_joined: string;
   memberships: UserMembership[];
+  is_public_schema?: boolean;
 };
 
 export type RoleDefinition = {

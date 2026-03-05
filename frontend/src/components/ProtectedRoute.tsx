@@ -4,7 +4,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useAuth } from "../context/AuthContext";
 import { fetchDashboardTenants } from "../services/dashboardApi";
-import { getAccessToken, getRefreshToken } from "../services/api";
+import { setActiveTenantSchema } from "../services/api";
 
 function isPublicHost(hostname: string): boolean {
   return hostname === "public.localhost";
@@ -23,6 +23,7 @@ async function canReachTenantHost(entryUrl: string): Promise<boolean> {
       await fetch(probe.toString(), {
         method: "GET",
         mode: "no-cors",
+        credentials: "include",
         cache: "no-store",
         signal: controller.signal,
       });
@@ -39,17 +40,6 @@ function buildTenantRedirectUrl(entryUrl: string, pathname: string, search: stri
   const target = new URL(entryUrl);
   target.pathname = pathname || "/";
   target.search = search;
-
-  const hash = new URLSearchParams();
-  const access = getAccessToken();
-  const refresh = getRefreshToken();
-  if (access) {
-    hash.set("sv_access", access);
-  }
-  if (refresh) {
-    hash.set("sv_refresh", refresh);
-  }
-  target.hash = hash.toString();
   return target.toString();
 }
 
@@ -57,16 +47,30 @@ export default function ProtectedRoute() {
   const { isAuthenticated, loading } = useAuth();
   const location = useLocation();
   const [tenantRedirectFailed, setTenantRedirectFailed] = useState(false);
+  const pathRoutingEnabled = String(import.meta.env.VITE_TENANT_ROUTING_MODE ?? "subdomain").toLowerCase() === "path";
 
   const mustSwitchToTenant = useMemo(
-    () => isAuthenticated && isPublicHost(window.location.hostname),
-    [isAuthenticated],
+    () => isAuthenticated && isPublicHost(window.location.hostname) && !pathRoutingEnabled,
+    [isAuthenticated, pathRoutingEnabled],
   );
 
   useEffect(() => {
     let cancelled = false;
 
     const redirectToTenant = async () => {
+      if (pathRoutingEnabled && isAuthenticated && isPublicHost(window.location.hostname)) {
+        try {
+          const tenants = await fetchDashboardTenants();
+          if (tenants.length > 0) {
+            setActiveTenantSchema(tenants[0].schema_name);
+          }
+        } catch {
+          setActiveTenantSchema(null);
+        }
+        setTenantRedirectFailed(false);
+        return;
+      }
+
       if (!mustSwitchToTenant) {
         setTenantRedirectFailed(false);
         return;
@@ -110,7 +114,7 @@ export default function ProtectedRoute() {
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, loading, location.pathname, location.search, mustSwitchToTenant]);
+  }, [isAuthenticated, loading, location.pathname, location.search, mustSwitchToTenant, pathRoutingEnabled]);
 
   if (loading) {
     return (

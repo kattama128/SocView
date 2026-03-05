@@ -1,6 +1,7 @@
 import os
 import sys
 from datetime import timedelta
+from importlib.util import find_spec
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ SHARED_APPS = (
     "customers",
     "accounts",
     "core",
+    "django_celery_beat",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -43,18 +45,25 @@ TENANT_APPS = (
 )
 
 INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in SHARED_APPS]
+if find_spec("channels") is not None:
+    INSTALLED_APPS.append("channels")
 
 TENANT_MODEL = "customers.Client"
 TENANT_DOMAIN_MODEL = "customers.Domain"
 SHOW_PUBLIC_IF_NO_TENANT_FOUND = True
 PUBLIC_SCHEMA_DOMAIN = os.getenv("PUBLIC_SCHEMA_DOMAIN", "localhost")
+TENANT_ROUTING_MODE = os.getenv("TENANT_ROUTING_MODE", "subdomain").strip().lower()
+if TENANT_ROUTING_MODE not in {"subdomain", "path"}:
+    TENANT_ROUTING_MODE = "subdomain"
 
 MIDDLEWARE = [
+    "core.middleware.PathTenantRoutingMiddleware",
     "django_tenants.middleware.main.TenantMainMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "core.middleware.JWTCookieMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -81,6 +90,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "socview.wsgi.application"
+ASGI_APPLICATION = "socview.asgi.application"
 
 DATABASES = {
     "default": {
@@ -131,9 +141,9 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.AnonRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {
-        "anon": os.getenv("DRF_THROTTLE_ANON", "120/min"),
-        "auth": os.getenv("DRF_THROTTLE_AUTH", "20/min"),
-        "webhook": os.getenv("DRF_THROTTLE_WEBHOOK", "120/min"),
+        "anon": os.getenv("DRF_THROTTLE_ANON", "600/min" if DEBUG else "120/min"),
+        "auth": os.getenv("DRF_THROTTLE_AUTH", "600/min" if DEBUG else "20/min"),
+        "webhook": os.getenv("DRF_THROTTLE_WEBHOOK", "600/min" if DEBUG else "120/min"),
     },
 }
 
@@ -169,6 +179,7 @@ CACHES = {
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/1")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/2")
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 DEFAULT_SEARCH_BACKEND = "postgres" if "test" in sys.argv else "auto"
 SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", DEFAULT_SEARCH_BACKEND)
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
@@ -190,8 +201,23 @@ CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 CLAMAV_TIMEOUT_SECONDS = int(os.getenv("CLAMAV_TIMEOUT_SECONDS", "5"))
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+ENABLE_BROWSER_PUSH = os.getenv("ENABLE_BROWSER_PUSH", "false").lower() == "true"
+WEB_PUSH_PUBLIC_KEY = os.getenv("WEB_PUSH_PUBLIC_KEY", "")
+WEB_PUSH_PRIVATE_KEY = os.getenv("WEB_PUSH_PRIVATE_KEY", "")
+WEB_PUSH_SUBJECT = os.getenv("WEB_PUSH_SUBJECT", "")
+
+if "channels" in INSTALLED_APPS:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [os.getenv("REDIS_URL", "redis://redis:6379/0")],
+            },
+        },
+    }
 
 CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL_ORIGINS", "false").lower() == "true"
+CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = _env_list(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost,http://tenant1.localhost,http://tenant2.localhost,https://localhost,https://tenant1.localhost,https://tenant2.localhost",
@@ -201,6 +227,8 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "false").lower() == "true"
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
 CSRF_COOKIE_SECURE = os.getenv("CSRF_COOKIE_SECURE", "false").lower() == "true"
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Strict")
 CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS", "http://localhost,https://localhost,http://tenant1.localhost,https://tenant1.localhost,http://tenant2.localhost,https://tenant2.localhost")
 SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0"))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS", "false").lower() == "true"
@@ -208,6 +236,15 @@ SECURE_HSTS_PRELOAD = os.getenv("SECURE_HSTS_PRELOAD", "false").lower() == "true
 SECURE_REFERRER_POLICY = os.getenv("SECURE_REFERRER_POLICY", "same-origin")
 X_FRAME_OPTIONS = os.getenv("X_FRAME_OPTIONS", "DENY")
 SECURE_CONTENT_TYPE_NOSNIFF = os.getenv("SECURE_CONTENT_TYPE_NOSNIFF", "true").lower() == "true"
+AUTH_ACCESS_COOKIE_NAME = os.getenv("AUTH_ACCESS_COOKIE_NAME", "access_token")
+AUTH_REFRESH_COOKIE_NAME = os.getenv("AUTH_REFRESH_COOKIE_NAME", "refresh_token")
+AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "Strict")
+AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").lower() == "true"
+AUTH_COOKIE_DOMAIN = os.getenv("AUTH_COOKIE_DOMAIN", "").strip()
+AUTH_ACCESS_COOKIE_PATH = os.getenv("AUTH_ACCESS_COOKIE_PATH", "/")
+AUTH_REFRESH_COOKIE_PATH = os.getenv("AUTH_REFRESH_COOKIE_PATH", "/api/auth/token/refresh/")
+AUTH_ACCESS_COOKIE_MAX_AGE = int(os.getenv("AUTH_ACCESS_COOKIE_MAX_AGE", "900"))
+AUTH_REFRESH_COOKIE_MAX_AGE = int(os.getenv("AUTH_REFRESH_COOKIE_MAX_AGE", "604800"))
 
 LOGGING = {
     "version": 1,
@@ -241,5 +278,9 @@ CELERY_BEAT_SCHEDULE = {
     "audit-retention-daily": {
         "task": "tenant_data.tasks.cleanup_audit_logs_task",
         "schedule": 86400.0,
+    },
+    "unsnooze-notifications-every-5-minutes": {
+        "task": "tenant_data.tasks.unsnooze_notifications_task",
+        "schedule": 300.0,
     },
 }

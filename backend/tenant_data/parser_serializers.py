@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from tenant_data.ingestion.parser import ParserValidationError, parse_parser_config_text
-from tenant_data.models import ParserDefinition, ParserRevision
+from tenant_data.models import ParserDefinition, ParserRevision, ParserTestCase
 
 User = get_user_model()
 
@@ -130,3 +130,44 @@ class ParserDefinitionSerializer(serializers.ModelSerializer):
 
     def get_active_config_data(self, obj):
         return obj.active_revision.config_data if obj.active_revision else {}
+
+
+class ParserRevisionListItemSerializer(serializers.ModelSerializer):
+    revision_id = serializers.IntegerField(source="id", read_only=True)
+    created_by = serializers.SerializerMethodField()
+    config_snapshot = serializers.JSONField(source="config_data", read_only=True)
+
+    class Meta:
+        model = ParserRevision
+        fields = ("revision_id", "version", "created_at", "created_by", "config_snapshot")
+        read_only_fields = fields
+
+    def get_created_by(self, obj):
+        if not obj.created_by:
+            return None
+        return {"id": obj.created_by_id, "username": obj.created_by.username}
+
+
+class ParserTestCaseSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(source="created_by.username", read_only=True)
+
+    class Meta:
+        model = ParserTestCase
+        fields = (
+            "id",
+            "parser",
+            "name",
+            "input_raw",
+            "expected_output",
+            "created_by",
+            "created_by_username",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "parser", "created_by", "created_by_username", "created_at", "updated_at")
+
+
+class ParserTestCaseCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ParserTestCase
+        fields = ("name", "input_raw", "expected_output")

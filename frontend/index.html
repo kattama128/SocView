@@ -10,6 +10,25 @@
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("theme_mode");
+          var mode = (stored === "light" || stored === "dark")
+            ? stored
+            : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+          document.documentElement.setAttribute("data-theme-mode", mode);
+          document.documentElement.setAttribute("data-theme", mode);
+          document.documentElement.classList.toggle("dark", mode === "dark");
+          document.documentElement.style.backgroundColor = mode === "dark" ? "#070d16" : "#f4f8ff";
+        } catch (_err) {
+          document.documentElement.setAttribute("data-theme-mode", "dark");
+          document.documentElement.setAttribute("data-theme", "dark");
+          document.documentElement.classList.add("dark");
+          document.documentElement.style.backgroundColor = "#070d16";
+        }
+      })();
+    </script>
     <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
   </head>
   <body>

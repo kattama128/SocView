@@ -21,6 +21,23 @@ export async function deactivateUserAccount(userId: number): Promise<UserAccount
   return response.data;
 }
 
+export async function setUserAccountActive(userId: number, isActive: boolean): Promise<UserAccount> {
+  const response = await api.post<UserAccount>(`/auth/users/${userId}/set-active/`, {
+    is_active: isActive,
+  });
+  return response.data;
+}
+
+export async function resetUserAccountPassword(
+  userId: number,
+  temporaryPassword?: string,
+): Promise<{ detail: string; email_sent: boolean }> {
+  const response = await api.post<{ detail: string; email_sent: boolean }>(`/auth/users/${userId}/reset-password/`, {
+    ...(temporaryPassword ? { temporary_password: temporaryPassword } : {}),
+  });
+  return response.data;
+}
+
 export async function fetchRoles(): Promise<RoleDefinition[]> {
   const response = await api.get<RoleDefinition[]>("/auth/roles/");
   return response.data;
@@ -39,9 +56,12 @@ export type SecurityAuditEvent = {
   user_agent: string;
 };
 
-export async function fetchSecurityAuditEvents(limit = 30): Promise<SecurityAuditEvent[]> {
+export async function fetchSecurityAuditEvents(
+  limit = 30,
+  filters?: { actor_id?: number; action?: string; object_type?: string },
+): Promise<SecurityAuditEvent[]> {
   const response = await api.get<SecurityAuditEvent[]>("/auth/security-audit/", {
-    params: { page_size: limit },
+    params: { page_size: limit, ...(filters ?? {}) },
   });
   if (Array.isArray(response.data)) {
     return response.data.slice(0, limit);

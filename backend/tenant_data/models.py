@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 
 
@@ -10,6 +11,15 @@ def alert_attachment_upload_path(instance, filename):
 
 def generate_api_key():
     return uuid.uuid4().hex
+
+
+def default_alert_iocs():
+    return {
+        "ips": [],
+        "hashes": [],
+        "urls": [],
+        "emails": [],
+    }
 
 
 class TimeStampedModel(models.Model):
@@ -174,6 +184,8 @@ class Alert(TimeStampedModel):
     parsed_payload = models.JSONField(null=True, blank=True, default=None)
     parsed_field_schema = models.JSONField(default=list, blank=True)
     parse_error_detail = models.TextField(blank=True)
+    iocs = models.JSONField(default=default_alert_iocs, blank=True)
+    mitre_technique_id = models.CharField(max_length=20, null=True, blank=True)
     current_state = models.ForeignKey(AlertState, on_delete=models.PROTECT, related_name="alerts")
     dedup_fingerprint = models.CharField(max_length=255, db_index=True, blank=True)
 
@@ -183,6 +195,9 @@ class Alert(TimeStampedModel):
             models.Index(fields=("customer", "-event_timestamp"), name="alert_customer_event_ts_idx"),
             models.Index(fields=("customer", "severity"), name="alert_customer_severity_idx"),
             models.Index(fields=("customer", "source_name"), name="alert_customer_source_idx"),
+            models.Index(fields=("-event_timestamp",), name="alert_event_ts_idx"),
+            models.Index(fields=("source_name", "-event_timestamp"), name="alert_source_event_ts_idx"),
+            GinIndex(fields=("iocs",), name="alert_iocs_gin_idx"),
         ]
 
     @property
@@ -191,6 +206,21 @@ class Alert(TimeStampedModel):
 
     def __str__(self):
         return f"{self.title} ({self.severity})"
+
+
+class SLAConfig(TimeStampedModel):
+    severity = models.CharField(max_length=20, choices=Alert.Severity.choices)
+    response_minutes = models.PositiveIntegerField()
+    resolution_minutes = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ("severity", "id")
+        constraints = [
+            models.UniqueConstraint(fields=("severity",), name="sla_config_severity_unique"),
+        ]
+
+    def __str__(self):
+        return f"SLA {self.severity}: response={self.response_minutes} resolution={self.resolution_minutes}"
 
 
 class AlertOccurrence(TimeStampedModel):
@@ -325,6 +355,8 @@ class Source(TimeStampedModel):
     type = models.CharField(max_length=20, choices=Type.choices)
     is_enabled = models.BooleanField(default=True)
     severity_map = models.JSONField(default=dict, blank=True)
+    schedule_cron = models.CharField(max_length=120, null=True, blank=True)
+    schedule_interval_minutes = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ("name",)
@@ -433,6 +465,33 @@ class ParserRevision(TimeStampedModel):
         return f"ParserRevision {self.parser_definition_id} v{self.version}"
 
 
+class ParserTestCase(TimeStampedModel):
+    parser = models.ForeignKey(
+        ParserDefinition,
+        on_delete=models.CASCADE,
+        related_name="test_cases",
+    )
+    name = models.CharField(max_length=150)
+    input_raw = models.TextField()
+    expected_output = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="parser_test_cases",
+    )
+
+    class Meta:
+        ordering = ("name", "id")
+        indexes = [
+            models.Index(fields=("parser",), name="parsertc_parser_idx"),
+        ]
+
+    def __str__(self):
+        return f"ParserTestCase {self.parser_id}:{self.name}"
+
+
 class SourceConfig(TimeStampedModel):
     class Status(models.TextChoices):
         NEVER = "never", "Never"
@@ -501,13 +560,16 @@ class IngestionRun(models.Model):
     created_count = models.PositiveIntegerField(default=0)
     updated_count = models.PositiveIntegerField(default=0)
     error_count = models.PositiveIntegerField(default=0)
-    error_detail = models.TextField(blank=True)
+    error_message = models.TextField(blank=True, default="")
+    error_detail = models.JSONField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ("-started_at", "-id")
         indexes = [
             models.Index(fields=("customer", "-started_at"), name="ingrun_customer_started_idx"),
+            models.Index(fields=("source",), name="ingrun_source_idx"),
+            models.Index(fields=("-started_at",), name="ingrun_started_idx"),
         ]
 
     def __str__(self):
@@ -622,6 +684,7 @@ class NotificationEvent(TimeStampedModel):
     severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.MEDIUM)
     metadata = models.JSONField(default=dict, blank=True)
     is_active = models.BooleanField(default=True)
+    snoozed_until = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ("-created_at", "-id")
@@ -631,6 +694,67 @@ class NotificationEvent(TimeStampedModel):
 
     def __str__(self):
         return f"{self.severity}:{self.title}"
+
+
+def default_notification_channels():
+    return {
+        "ui": True,
+        "email": False,
+    }
+
+
+class NotificationPreferences(TimeStampedModel):
+    class MinSeverity(models.TextChoices):
+        ALL = "all", "All"
+        LOW = "low", "Low"
+        MEDIUM = "medium", "Medium"
+        HIGH = "high", "High"
+        CRITICAL = "critical", "Critical"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notification_preferences",
+    )
+    min_severity = models.CharField(
+        max_length=20,
+        choices=MinSeverity.choices,
+        default=MinSeverity.ALL,
+    )
+    customer_filter = models.ManyToManyField(
+        Customer,
+        related_name="notification_preferences",
+        blank=True,
+    )
+    channels = models.JSONField(default=default_notification_channels, blank=True)
+
+    class Meta:
+        ordering = ("user_id",)
+
+    def __str__(self):
+        return f"NotificationPreferences(user={self.user_id}, min={self.min_severity})"
+
+
+class PushSubscription(TimeStampedModel):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="push_subscriptions",
+    )
+    endpoint = models.TextField()
+    p256dh = models.TextField()
+    auth = models.TextField()
+    user_agent = models.CharField(max_length=255, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("-updated_at", "-id")
+        constraints = [
+            models.UniqueConstraint(fields=("user", "endpoint"), name="push_subscription_user_endpoint_unique"),
+        ]
+
+    def __str__(self):
+        return f"PushSubscription(user={self.user_id})"
 
 
 class NotificationRead(models.Model):

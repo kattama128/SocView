@@ -1,13 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import api, {
-  ACCESS_TOKEN_KEY,
-  REFRESH_TOKEN_KEY,
   SESSION_EXPIRED_EVENT,
   SESSION_MESSAGE_KEY,
-  clearAuthTokens,
-  getAccessToken,
-  setAuthTokens,
+  clearLegacyAuthTokens,
+  fetchCsrfToken,
+  hasLegacyAuthTokens,
+  logoutSession,
+  migrateLegacyAuthTokens,
 } from "../services/api";
 import { PermissionMap } from "../types/users";
 
@@ -17,6 +17,7 @@ export type AuthUser = {
   email: string;
   role: string;
   permissions: PermissionMap;
+  is_public_schema?: boolean;
 };
 
 type AuthContextValue = {
@@ -26,7 +27,7 @@ type AuthContextValue = {
   sessionMessage: string | null;
   clearSessionMessage: () => void;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   isAuthenticated: boolean;
 };
 
@@ -73,36 +74,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired as EventListener);
 
     const bootstrap = async () => {
-      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-      const sharedAccess = hashParams.get("sv_access");
-      const sharedRefresh = hashParams.get("sv_refresh");
-      if (sharedAccess) {
-        localStorage.setItem(ACCESS_TOKEN_KEY, sharedAccess);
-        hashParams.delete("sv_access");
-      }
-      if (sharedRefresh) {
-        localStorage.setItem(REFRESH_TOKEN_KEY, sharedRefresh);
-        hashParams.delete("sv_refresh");
-      }
-      if (sharedAccess || sharedRefresh) {
-        const cleanHash = hashParams.toString();
-        const cleanUrl = `${window.location.pathname}${window.location.search}${cleanHash ? `#${cleanHash}` : ""}`;
-        window.history.replaceState({}, document.title, cleanUrl);
-      }
-
-      const token = getAccessToken();
-      if (!token) {
-        setSessionState("anonymous");
-        setLoading(false);
-        return;
+      try {
+        await fetchCsrfToken();
+      } catch {
+        // best effort
       }
 
       try {
+        if (hasLegacyAuthTokens()) {
+          const migrated = await migrateLegacyAuthTokens();
+          if (!migrated) {
+            clearLegacyAuthTokens();
+          }
+        }
         const response = await api.get<AuthUser>("/auth/me/");
         setUser(normalizeUser(response.data));
         setSessionState("authenticated");
       } catch {
-        clearAuthTokens();
         setUser(null);
         setSessionState("anonymous");
       } finally {
@@ -118,10 +106,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (username: string, password: string) => {
     setSessionMessage(null);
-    const response = await api.post("/auth/token/", { username, password });
-    setAuthTokens({ access: response.data.access, refresh: response.data.refresh });
+    await fetchCsrfToken();
+    const response = await api.post<{ user?: AuthUser }>("/auth/token/", { username, password });
     if (response.data.user) {
-      setUser(normalizeUser(response.data.user as AuthUser));
+      setUser(normalizeUser(response.data.user));
     } else {
       const meResponse = await api.get<AuthUser>("/auth/me/");
       setUser(normalizeUser(meResponse.data));
@@ -129,8 +117,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSessionState("authenticated");
   };
 
-  const logout = () => {
-    clearAuthTokens();
+  const logout = async () => {
+    try {
+      await logoutSession();
+    } catch {
+      // best effort
+    }
     setUser(null);
     setSessionState("anonymous");
     setSessionMessage(null);

@@ -2,6 +2,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import DescriptionIcon from "@mui/icons-material/Description";
 import DomainIcon from "@mui/icons-material/Domain";
 import GroupsIcon from "@mui/icons-material/Groups";
+import InsertChartOutlinedIcon from "@mui/icons-material/InsertChartOutlined";
 import LogoutIcon from "@mui/icons-material/Logout";
 import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsIcon from "@mui/icons-material/Notifications";
@@ -16,7 +17,6 @@ import {
   Box,
   Button,
   Chip,
-  Divider,
   Drawer,
   IconButton,
   InputAdornment,
@@ -34,12 +34,17 @@ import {
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
+import NotificationDrawer from "../components/NotificationDrawer";
+import ThemeToggle from "../components/ThemeToggle";
+import StatusBar from "../components/StatusBar";
 import { useAuth } from "../context/AuthContext";
 import { useCustomer } from "../context/CustomerContext";
-import { ackAllNotifications, ackNotification, fetchNotifications } from "../services/alertsApi";
+import useNotificationsWS from "../hooks/useNotificationsWS";
+import { canAccessAdmin, canAccessAnalytics } from "../services/roleUtils";
+import { ackAllNotifications, ackNotification, fetchNotifications, snoozeNotification } from "../services/alertsApi";
 import { NotificationEvent } from "../types/alerts";
 
 const sidebarWidth = 250;
@@ -64,22 +69,28 @@ export default function AppLayout() {
   const [notifications, setNotifications] = useState<NotificationEvent[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [popupNotification, setPopupNotification] = useState<NotificationEvent | null>(null);
+  const [quickSearch, setQuickSearch] = useState("");
 
   const seenPopupIdsRef = useRef<Set<number>>(new Set());
 
-  const items = useMemo<MenuItemLink[]>(
-    () => [
+  const items = useMemo<MenuItemLink[]>(() => {
+    const analyticsEnabled = canAccessAnalytics(user?.role, user?.permissions);
+    const adminEnabled = canAccessAdmin(user?.role, user?.permissions);
+    const menu: MenuItemLink[] = [
       { label: "Dashboard", icon: <DashboardIcon />, to: "/" },
       { label: "Active Alarms", icon: <DomainIcon />, to: "/active-alarms" },
       { label: "Sources", icon: <StorageIcon />, to: "/sources" },
       { label: "Customers", icon: <GroupsIcon />, to: "/customers" },
-      { label: "Reports", icon: <DescriptionIcon />, to: "/reports", disabled: true },
+      { label: "Analytics", icon: <InsertChartOutlinedIcon />, to: "/analytics", disabled: !analyticsEnabled },
       { label: "Management", icon: <SettingsIcon />, to: "/configurazione" },
-    ],
-    [],
-  );
+    ];
+    if (adminEnabled) {
+      menu.push({ label: "Admin Panel", icon: <DescriptionIcon />, to: "/admin-panel" });
+    }
+    return menu;
+  }, [user?.permissions, user?.role]);
 
-  const loadNotifications = async () => {
+  const loadNotifications = useCallback(async () => {
     try {
       const response = await fetchNotifications("all", 30);
       setNotifications(response.results);
@@ -94,7 +105,7 @@ export default function AppLayout() {
       setNotifications([]);
       setUnreadCount(0);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -104,15 +115,20 @@ export default function AppLayout() {
     }
 
     void loadNotifications();
-    const timer = window.setInterval(() => {
+  }, [user, loadNotifications]);
+
+  useNotificationsWS({
+    enabled: Boolean(user),
+    onNotification: () => {
       void loadNotifications();
-    }, 15000);
+    },
+    onFallbackPoll: async () => {
+      await loadNotifications();
+    },
+  });
 
-    return () => window.clearInterval(timer);
-  }, [user]);
-
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate("/login", { replace: true });
   };
 
@@ -134,6 +150,31 @@ export default function AppLayout() {
     }
   };
 
+  const handleSnoozeNotification = async (notificationId: number, payload: { minutes?: number; snooze_until?: string }) => {
+    try {
+      await snoozeNotification(notificationId, payload);
+      await loadNotifications();
+    } catch {
+      // best effort
+    }
+  };
+
+  const handleQuickSearchSubmit = useCallback(() => {
+    const query = quickSearch.trim();
+    const nextParams = new URLSearchParams();
+    if (query) {
+      const encodedFilter = encodeURIComponent(JSON.stringify({ searchText: query, page: 0 }));
+      nextParams.set("filter", encodedFilter);
+    }
+    navigate(
+      {
+        pathname: "/active-alarms",
+        search: nextParams.toString() ? `?${nextParams.toString()}` : "",
+      },
+      { replace: false },
+    );
+  }, [navigate, quickSearch]);
+
   const drawerContent = (
     <Stack sx={{ height: "100%", color: "text.primary" }}>
       <Box sx={{ px: 2.4, py: 2.6 }}>
@@ -149,7 +190,7 @@ export default function AppLayout() {
               boxShadow: "0 10px 24px rgba(37,99,235,0.35)",
             }}
           >
-            <ShieldOutlinedIcon fontSize="small" sx={{ color: "#e6fffb" }} />
+            <ShieldOutlinedIcon fontSize="small" sx={{ color: theme.palette.primary.contrastText }} />
           </Box>
           <Box>
             <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>SocView</Typography>
@@ -223,13 +264,14 @@ export default function AppLayout() {
       </List>
 
       <Box sx={{ flexGrow: 1 }} />
+      <StatusBar />
 
       <Box
         sx={{
           px: 2.4,
           py: 1.8,
           borderTop: "1px solid var(--border-subtle)",
-          background: "rgba(10, 15, 24, 0.5)",
+          background: alpha(theme.palette.background.paper, 0.64),
         }}
       >
         <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{user?.username}</Typography>
@@ -269,11 +311,21 @@ export default function AppLayout() {
           <TextField
             size="small"
             placeholder="Ricerca rapida (IP, hash, event id...)"
+            value={quickSearch}
+            onChange={(event) => setQuickSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleQuickSearchSubmit();
+              }
+            }}
             sx={{ minWidth: { xs: 140, md: 300 }, flexGrow: 1, maxWidth: 560 }}
             InputProps={{
               startAdornment: (
                 <InputAdornment position="start">
-                  <SearchIcon sx={{ color: "text.secondary", fontSize: 18 }} />
+                  <IconButton size="small" onClick={handleQuickSearchSubmit} aria-label="esegui ricerca rapida">
+                    <SearchIcon sx={{ color: "text.secondary", fontSize: 18 }} />
+                  </IconButton>
                 </InputAdornment>
               ),
             }}
@@ -297,11 +349,18 @@ export default function AppLayout() {
             ))}
           </TextField>
 
-          <IconButton color="inherit" onClick={() => setNotificationDrawerOpen(true)} aria-label="notifications">
+          <IconButton
+            color="inherit"
+            onClick={() => setNotificationDrawerOpen(true)}
+            aria-label="notifiche"
+            data-testid="notification-bell"
+          >
             <Badge badgeContent={unreadCount} color="error">
               <NotificationsIcon />
             </Badge>
           </IconButton>
+
+          <ThemeToggle />
 
           <Chip
             label={selectedCustomer ? `Cliente: ${selectedCustomer.code}` : "Cliente: ALL"}
@@ -313,7 +372,7 @@ export default function AppLayout() {
             }}
           />
 
-          <IconButton color="inherit" onClick={handleLogout} aria-label="logout">
+          <IconButton color="inherit" onClick={() => void handleLogout()} aria-label="logout" data-testid="logout-button">
             <LogoutIcon />
           </IconButton>
         </Toolbar>
@@ -337,67 +396,19 @@ export default function AppLayout() {
         {drawerContent}
       </Drawer>
 
-      <Drawer
-        anchor="right"
+      <NotificationDrawer
         open={notificationDrawerOpen}
+        notifications={notifications}
+        customers={customers}
         onClose={() => setNotificationDrawerOpen(false)}
-        sx={{
-          [`& .MuiDrawer-paper`]: {
-            width: 390,
-            p: 2,
-            borderLeft: "1px solid var(--border-subtle)",
-          },
+        onOpenAlert={(alertId) => {
+          navigate(`/alerts/${alertId}`);
+          setNotificationDrawerOpen(false);
         }}
-      >
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-          <Typography variant="h6" sx={{ fontSize: 20 }}>Notification Center</Typography>
-          <Button size="small" onClick={() => void handleAckAll()} color="info">
-            Segna tutto letto
-          </Button>
-        </Stack>
-        <Divider sx={{ mb: 1.2 }} />
-        <List>
-          {notifications.map((item) => (
-            <ListItemButton
-              key={item.id}
-              sx={{
-                mb: 1,
-                borderRadius: 1.5,
-                border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-                alignItems: "flex-start",
-                opacity: item.is_read ? 0.65 : 1,
-                background: alpha(theme.palette.background.paper, 0.72),
-              }}
-              onClick={() => {
-                void handleAckNotification(item.id);
-                navigate(`/alerts/${item.alert}`);
-                setNotificationDrawerOpen(false);
-              }}
-            >
-              <ListItemText
-                primary={
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Typography variant="body2">{item.title}</Typography>
-                    {!item.is_read ? (
-                      <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "error.main" }} />
-                    ) : null}
-                  </Stack>
-                }
-                secondary={
-                  <>
-                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                      {new Date(item.created_at).toLocaleString("it-IT")}
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                      {item.message}
-                    </Typography>
-                  </>
-                }
-              />
-            </ListItemButton>
-          ))}
-        </List>
-      </Drawer>
+        onAck={handleAckNotification}
+        onAckAll={handleAckAll}
+        onSnooze={handleSnoozeNotification}
+      />
 
       <Snackbar
         open={Boolean(popupNotification)}

@@ -44,6 +44,15 @@ const run = async () => {
     return { response, data };
   };
 
+  const loadAccessTokenFromCookies = async () => {
+    const cookies = await context.cookies(baseUrl);
+    const accessCookie = cookies.find((cookie) => cookie.name === "access_token");
+    if (!accessCookie?.value) {
+      throw new Error("Access token cookie non disponibile dopo login.");
+    }
+    accessToken = accessCookie.value;
+  };
+
   await step("Login admin", async () => {
     await login(page, "admin");
     await page.getByRole("button", { name: "Configura" }).waitFor();
@@ -51,10 +60,7 @@ const run = async () => {
     if (!isPublicHost(currentHost)) {
       tenantHost = currentHost;
     }
-    accessToken = await page.evaluate(() => localStorage.getItem("socview_access_token"));
-    if (!accessToken) {
-      throw new Error("Access token non disponibile dopo login.");
-    }
+    await loadAccessTokenFromCookies();
   });
 
   await step("Apertura Sources", async () => {

@@ -67,6 +67,19 @@ export type AlertOccurrence = {
   last_seen: string;
 };
 
+export type IocCollection = {
+  ips: string[];
+  hashes: string[];
+  urls: string[];
+  emails: string[];
+};
+
+export type SlaStatus = {
+  response: "ok" | "warning" | "breached";
+  resolution: "ok" | "warning" | "breached";
+  response_remaining_minutes: number;
+};
+
 export type CustomerSummary = {
   id: number;
   name: string;
@@ -151,15 +164,36 @@ export type Alert = {
   parsed_payload: Record<string, unknown> | null;
   parsed_field_schema: Array<{ field: string; type: string }>;
   parse_error_detail: string;
+  iocs?: IocCollection | null;
+  mitre_technique_id?: string | null;
   current_state: number;
   current_state_detail: AlertState;
   is_active: boolean;
   dedup_fingerprint: string;
   occurrence?: AlertOccurrence;
   assignment?: Assignment;
+  sla_status?: SlaStatus | null;
   tags: Tag[];
   comments?: CommentNote[];
   attachments?: Attachment[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type RelatedAlert = {
+  id: number;
+  title: string;
+  severity: Alert["severity"];
+  created_at: string;
+  event_timestamp: string;
+  current_state_detail: AlertState;
+};
+
+export type SlaConfig = {
+  id: number;
+  severity: Alert["severity"];
+  response_minutes: number;
+  resolution_minutes: number;
   created_at: string;
   updated_at: string;
 };
@@ -200,10 +234,33 @@ export type SearchRequest = {
   event_timestamp_from?: string;
   event_timestamp_to?: string;
   is_active?: boolean;
+  assignee?: string;
+  in_state_since?: string;
   dynamic_filters?: DynamicFilter[];
   ordering?: string;
   page?: number;
   page_size?: number;
+};
+
+export type ExportPreviewResponse = {
+  count: number;
+  rows: Array<Record<string, unknown>>;
+  columns: string[];
+};
+
+export type BulkActionRequest = {
+  action: "change_state" | "assign" | "add_tag";
+  ids?: number[];
+  select_all?: boolean;
+  filters?: SearchRequest;
+  state_id?: number;
+  assigned_to_id?: number | null;
+  tag_ids?: number[];
+};
+
+export type BulkActionResponse = {
+  updated: number;
+  errors: number;
 };
 
 export type SearchResponse = {
@@ -251,6 +308,7 @@ export type NotificationEvent = {
   metadata: Record<string, unknown>;
   is_active: boolean;
   is_read: boolean;
+  snoozed_until?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -258,6 +316,17 @@ export type NotificationEvent = {
 export type NotificationListResponse = {
   unread_count: number;
   results: NotificationEvent[];
+};
+
+export type NotificationPreferences = {
+  min_severity: "all" | Alert["severity"];
+  customer_filter: number[];
+  channels: {
+    ui: boolean;
+    email: boolean;
+  };
+  created_at: string;
+  updated_at: string;
 };
 
 export type AlertDetailFieldConfig = {

@@ -46,3 +46,15 @@ export function canManageUsers(role?: string, permissions?: PermissionMap): bool
 export function canExport(role?: string, permissions?: PermissionMap): boolean {
   return resolvePermission(permissions, role, "export");
 }
+
+export function canAccessAdmin(role?: string, permissions?: PermissionMap): boolean {
+  return resolvePermission(permissions, role, "admin");
+}
+
+export function canAccessAnalytics(role?: string, permissions?: PermissionMap): boolean {
+  return (
+    resolvePermission(permissions, role, "triage") ||
+    resolvePermission(permissions, role, "manage_customers") ||
+    resolvePermission(permissions, role, "admin")
+  );
+}

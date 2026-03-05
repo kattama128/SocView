@@ -1,12 +1,14 @@
 import csv
 from datetime import timedelta
+import re
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Count, Q
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.utils.text import get_valid_filename
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer
@@ -28,6 +30,7 @@ from accounts.rbac import (
 )
 from tenant_data.audit import create_audit_log
 from tenant_data.customer_scoping import get_enabled_source_names_for_customer
+from tenant_data.filters import AbstractBaseFilter
 from tenant_data.models import (
     Alert,
     AlertDetailFieldConfig,
@@ -39,15 +42,20 @@ from tenant_data.models import (
     AuditLog,
     Comment,
     Customer,
+    CustomerMembership,
     CustomerSettings,
     CustomerSourcePreference,
     NotificationEvent,
+    NotificationPreferences,
     NotificationRead,
+    PushSubscription,
+    SLAConfig,
     SavedSearch,
     Source,
     Tag,
 )
 from tenant_data.permissions import RoleBasedWritePermission, TenantSchemaAccessPermission
+from tenant_data.notifications import create_notifications, get_or_create_preferences
 from tenant_data.rbac import (
     ensure_customer_capability,
     filter_queryset_by_customer_access,
@@ -69,6 +77,8 @@ from tenant_data.serializers import (
     AttachmentSerializer,
     AttachmentUploadSerializer,
     AuditLogSerializer,
+    BulkActionRequestSerializer,
+    BulkActionResultSerializer,
     CommentCreateSerializer,
     CommentSerializer,
     CustomerSettingsResponseSerializer,
@@ -77,14 +87,26 @@ from tenant_data.serializers import (
     CustomerSourceCatalogSerializer,
     CustomerSerializer,
     CustomerOverviewSerializer,
+    CustomerMembershipSerializer,
+    CustomerMembershipUpsertSerializer,
     ExportConfigurableRequestSerializer,
+    ExportPreviewResponseSerializer,
     NotificationAckSerializer,
     NotificationEventSerializer,
+    NotificationPreferencesSerializer,
+    NotificationSnoozeSerializer,
+    PushSubscriptionSerializer,
+    PushSubscriptionUpsertSerializer,
+    RelatedAlertSerializer,
+    SLAConfigSerializer,
     SavedSearchSerializer,
     StateChangeSerializer,
     TagMutationSerializer,
     TagSerializer,
 )
+
+User = get_user_model()
+MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_.-]{1,150})")
 
 def _parse_customer_id(raw_value, field_name="customer_id"):
     return parse_and_validate_customer_id(raw_value, field_name=field_name)
@@ -430,6 +452,88 @@ class CustomerViewSet(viewsets.ModelViewSet):
         }
         return Response(payload, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        request=CustomerMembershipUpsertSerializer,
+        responses=CustomerMembershipSerializer(many=True),
+        tags=["Customers"],
+    )
+    @action(detail=True, methods=["get", "post", "delete"], url_path="memberships")
+    def memberships(self, request, pk=None):
+        customer = self.get_object()
+        ensure_customer_capability(request.user, customer.id, CAP_MANAGE_CUSTOMERS)
+
+        if request.method.lower() == "get":
+            queryset = customer.memberships.select_related("user").order_by("user__username", "id")
+            serializer = CustomerMembershipSerializer(queryset, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        if request.method.lower() == "post":
+            serializer = CustomerMembershipUpsertSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.validated_data
+            membership, _ = CustomerMembership.objects.update_or_create(
+                customer=customer,
+                user=payload["user"],
+                defaults={
+                    "scope": payload["scope"],
+                    "is_active": payload.get("is_active", True),
+                    "notes": payload.get("notes", ""),
+                },
+            )
+            create_audit_log(
+                request,
+                action="customer.membership.upsert",
+                obj=customer,
+                diff={
+                    "customer_id": customer.id,
+                    "user_id": membership.user_id,
+                    "scope": membership.scope,
+                    "is_active": membership.is_active,
+                },
+            )
+            create_security_audit_event(
+                request,
+                action="customer.membership.upsert",
+                object_type="CustomerMembership",
+                object_id=str(membership.id),
+                metadata={
+                    "customer_id": customer.id,
+                    "user_id": membership.user_id,
+                    "scope": membership.scope,
+                    "is_active": membership.is_active,
+                },
+            )
+            queryset = customer.memberships.select_related("user").order_by("user__username", "id")
+            return Response(CustomerMembershipSerializer(queryset, many=True).data, status=status.HTTP_200_OK)
+
+        user_id = request.data.get("user_id") or request.query_params.get("user_id")
+        if not user_id:
+            return Response({"detail": "user_id obbligatorio"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            parsed_user_id = int(user_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "user_id non valido"}, status=status.HTTP_400_BAD_REQUEST)
+        membership = customer.memberships.filter(user_id=parsed_user_id).first()
+        if not membership:
+            return Response({"detail": "Membership non trovata"}, status=status.HTTP_404_NOT_FOUND)
+        membership_id = membership.id
+        membership.delete()
+        create_audit_log(
+            request,
+            action="customer.membership.deleted",
+            obj=customer,
+            diff={"customer_id": customer.id, "user_id": parsed_user_id},
+        )
+        create_security_audit_event(
+            request,
+            action="customer.membership.deleted",
+            object_type="CustomerMembership",
+            object_id=str(membership_id),
+            metadata={"customer_id": customer.id, "user_id": parsed_user_id},
+        )
+        queryset = customer.memberships.select_related("user").order_by("user__username", "id")
+        return Response(CustomerMembershipSerializer(queryset, many=True).data, status=status.HTTP_200_OK)
+
 
 class AlertViewSet(viewsets.ModelViewSet):
     pagination_class = AlertPagination
@@ -447,6 +551,23 @@ class AlertViewSet(viewsets.ModelViewSet):
             return AlertListSerializer
         return AlertDetailSerializer
 
+    @staticmethod
+    def _parse_dt_param(raw_value):
+        if not raw_value:
+            return None
+        parsed_dt = parse_datetime(raw_value)
+        if parsed_dt is not None:
+            if timezone.is_naive(parsed_dt):
+                parsed_dt = timezone.make_aware(parsed_dt, timezone.get_current_timezone())
+            return parsed_dt
+        parsed_date = parse_date(raw_value)
+        if parsed_date is not None:
+            return timezone.make_aware(
+                timezone.datetime.combine(parsed_date, timezone.datetime.min.time()),
+                timezone.get_current_timezone(),
+            )
+        return None
+
     def get_queryset(self):
         queryset = super().get_queryset()
         customer_id = parse_and_validate_customer_id(
@@ -458,6 +579,13 @@ class AlertViewSet(viewsets.ModelViewSet):
         severity = self.request.query_params.get("severity")
         text = self.request.query_params.get("text")
         is_active = self.request.query_params.get("is_active")
+        state_category = self.request.query_params.get("state__category")
+        created_after = self._parse_dt_param(self.request.query_params.get("created_after"))
+        created_before = self._parse_dt_param(self.request.query_params.get("created_before"))
+        from_dt = self._parse_dt_param(self.request.query_params.get("from"))
+        to_dt = self._parse_dt_param(self.request.query_params.get("to"))
+        assignee = self.request.query_params.get("assignee")
+        in_state_since = self.request.query_params.get("in_state_since")
 
         if customer_id is not None:
             queryset = queryset.filter(customer_id=customer_id)
@@ -487,15 +615,66 @@ class AlertViewSet(viewsets.ModelViewSet):
         if is_active in {"true", "false"}:
             queryset = queryset.filter(current_state__is_final=(is_active == "false"))
 
+        if state_category == "open":
+            queryset = queryset.filter(current_state__is_final=False)
+        elif state_category == "closed":
+            queryset = queryset.filter(current_state__is_final=True)
+
+        if created_after is not None:
+            queryset = queryset.filter(created_at__gte=created_after)
+        if created_before is not None:
+            queryset = queryset.filter(created_at__lte=created_before)
+        if from_dt is not None:
+            queryset = queryset.filter(created_at__gte=from_dt)
+        if to_dt is not None:
+            queryset = queryset.filter(created_at__lte=to_dt)
+
+        filter_helper = AbstractBaseFilter(self.request.user)
+        queryset = filter_helper.apply_assignment_and_state_filters(
+            queryset,
+            assignee=assignee,
+            in_state_since=in_state_since,
+        )
+
         return queryset
 
-    def _parse_search_payload_for_export(self, payload):
+    def list(self, request, *args, **kwargs):
+        summary = request.query_params.get("summary")
+        if summary == "severity":
+            queryset = self.filter_queryset(self.get_queryset())
+            rows = queryset.values("severity").annotate(count=Count("id"))
+            counts = {item["severity"]: int(item["count"]) for item in rows}
+            severities = [Alert.Severity.CRITICAL, Alert.Severity.HIGH, Alert.Severity.MEDIUM, Alert.Severity.LOW]
+            return Response(
+                {
+                    "summary": "severity",
+                    "items": [{"severity": severity, "count": counts.get(severity, 0)} for severity in severities],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if summary == "mttr":
+            queryset = self.filter_queryset(self.get_queryset()).filter(current_state__is_final=True)
+            duration_expr = ExpressionWrapper(F("updated_at") - F("created_at"), output_field=DurationField())
+            aggregate = queryset.aggregate(avg_duration=Avg(duration_expr))
+            avg_duration = aggregate.get("avg_duration")
+            avg_minutes = int(round(avg_duration.total_seconds() / 60.0)) if avg_duration else None
+            return Response(
+                {"summary": "mttr", "avg_minutes": avg_minutes, "sample_size": queryset.count()},
+                status=status.HTTP_200_OK,
+            )
+
+        return super().list(request, *args, **kwargs)
+
+    def _parse_search_payload_for_export(self, payload, capability=CAP_EXPORT):
         serializer = AlertSearchRequestSerializer(data=payload or {})
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
+        filter_helper = AbstractBaseFilter(self.request.user)
         customer_id = validated.get("customer_id")
         if customer_id is not None:
-            ensure_customer_capability(self.request.user, customer_id, CAP_EXPORT)
+            ensure_customer_capability(self.request.user, customer_id, capability)
+        assignee_id = filter_helper.resolve_assignee(validated.get("assignee"))
         return SearchRequest(
             customer_id=customer_id,
             text=validated.get("text", ""),
@@ -510,6 +689,8 @@ class AlertViewSet(viewsets.ModelViewSet):
             event_timestamp_from=validated.get("event_timestamp_from"),
             event_timestamp_to=validated.get("event_timestamp_to"),
             is_active=validated.get("is_active"),
+            assigned_to_id=assignee_id,
+            in_state_since=validated.get("in_state_since"),
             dynamic_filters=validated.get("dynamic_filters", []),
             ordering=validated.get("ordering", "-event_timestamp"),
             page=validated.get("page", 1),
@@ -534,6 +715,68 @@ class AlertViewSet(viewsets.ModelViewSet):
                 break
             page += 1
         return collected
+
+    @staticmethod
+    def _extract_nested_value(payload, *keys):
+        current = payload
+        for key in keys:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
+
+    @staticmethod
+    def _extract_rule_id(alert):
+        return AlertViewSet._extract_nested_value(alert.raw_payload or {}, "rule_id")
+
+    @staticmethod
+    def _extract_src_ip(alert):
+        payload = alert.raw_payload or {}
+        src_ip = payload.get("src_ip")
+        if src_ip:
+            return src_ip
+        source_block_ip = AlertViewSet._extract_nested_value(payload, "source", "ip")
+        if source_block_ip:
+            return source_block_ip
+        return payload.get("ip")
+
+    @staticmethod
+    def _resolve_mentioned_users(body, *, alert=None):
+        usernames = sorted(set(MENTION_PATTERN.findall(body or "")))
+        if not usernames:
+            return []
+
+        candidates = list(User.objects.filter(username__in=usernames, is_active=True))
+        if alert is None or alert.customer_id is None:
+            return candidates
+
+        allowed_users = []
+        for candidate in candidates:
+            try:
+                ensure_customer_capability(candidate, alert.customer_id, CAP_VIEW)
+                allowed_users.append(candidate)
+            except PermissionDenied:
+                continue
+        return allowed_users
+
+    def _create_mention_notifications(self, request, alert, body):
+        mentioned_users = self._resolve_mentioned_users(body, alert=alert)
+        recipients = [item for item in mentioned_users if item.id != request.user.id]
+        if not recipients:
+            return
+        create_notifications(
+            alert=alert,
+            title=f"Menzione su alert #{alert.id}",
+            message=f"{request.user.username} ti ha menzionato in un commento: {alert.title}",
+            severity=NotificationEvent.Severity.MEDIUM,
+            metadata={
+                "mention": True,
+                "comment_author_id": request.user.id,
+                "comment_author_username": request.user.username,
+            },
+            recipients=recipients,
+            dedupe_key=f"mention:{alert.id}",
+        )
 
     def perform_create(self, serializer):
         current_state = serializer.validated_data.get("current_state")
@@ -619,7 +862,7 @@ class AlertViewSet(viewsets.ModelViewSet):
         )
 
     @extend_schema(request=StateChangeSerializer, responses=AlertDetailSerializer, tags=["Alerts"])
-    @action(detail=True, methods=["post"], url_path="change-state")
+    @action(detail=True, methods=["post", "patch"], url_path="change-state")
     def change_state(self, request, pk=None):
         alert = self.get_object()
         serializer = StateChangeSerializer(data=request.data)
@@ -710,6 +953,105 @@ class AlertViewSet(viewsets.ModelViewSet):
         refreshed_alert = self.get_queryset().get(pk=alert.pk)
         return Response(AlertDetailSerializer(refreshed_alert, context={"request": request}).data)
 
+    @extend_schema(request=BulkActionRequestSerializer, responses=BulkActionResultSerializer, tags=["Alerts"])
+    @action(detail=False, methods=["post"], url_path="bulk-action")
+    def bulk_action(self, request):
+        if not has_capability(request.user, CAP_TRIAGE):
+            return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = BulkActionRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        action_name = payload["action"]
+        select_all = payload.get("select_all", False)
+
+        if select_all:
+            filters_payload = payload.get("filters") or {}
+            search_request = self._parse_search_payload_for_export(filters_payload, capability=CAP_TRIAGE)
+            target_ids = self._collect_alert_ids_for_export(search_request, all_results=True)
+        else:
+            target_ids = payload.get("ids", [])
+
+        if not target_ids:
+            return Response({"updated": 0, "errors": 0}, status=status.HTTP_200_OK)
+
+        queryset = self.get_queryset().filter(id__in=target_ids).select_related("current_state", "customer")
+        alerts = list(queryset)
+        updated = 0
+        errors = 0
+
+        if action_name == "change_state":
+            state = payload["state_id"]
+            for alert in alerts:
+                try:
+                    old_state = alert.current_state
+                    alert.current_state = state
+                    alert.save(update_fields=["current_state", "updated_at"])
+                    create_audit_log(
+                        request,
+                        action="alert.state_changed",
+                        obj=alert,
+                        alert=alert,
+                        diff={"old_state": old_state.name, "new_state": state.name},
+                    )
+                    updated += 1
+                except Exception:
+                    errors += 1
+
+        if action_name == "assign":
+            assignee = payload.get("assigned_to_id")
+            for alert in alerts:
+                try:
+                    if assignee is not None:
+                        if not has_capability(assignee, CAP_TRIAGE):
+                            raise ValidationError({"assigned_to_id": "Utente non abilitato al triage"})
+                        if alert.customer_id is not None:
+                            ensure_customer_capability(
+                                assignee,
+                                alert.customer_id,
+                                CAP_VIEW,
+                                field_name="assigned_to_id",
+                            )
+                    assignment, _ = Assignment.objects.get_or_create(alert=alert)
+                    old_assignee = assignment.assigned_to
+                    assignment.assigned_to = assignee
+                    assignment.assigned_by = request.user
+                    assignment.save()
+                    create_audit_log(
+                        request,
+                        action="alert.assigned",
+                        obj=assignment,
+                        alert=alert,
+                        diff={
+                            "old_assigned_to": old_assignee.username if old_assignee else None,
+                            "new_assigned_to": assignee.username if assignee else None,
+                        },
+                    )
+                    updated += 1
+                except Exception:
+                    errors += 1
+
+        if action_name == "add_tag":
+            tag_ids = payload.get("tag_ids", [])
+            tags = list(Tag.objects.filter(id__in=tag_ids))
+            tag_names = [tag.name for tag in tags]
+            for alert in alerts:
+                try:
+                    for tag in tags:
+                        AlertTag.objects.get_or_create(alert=alert, tag=tag)
+                    create_audit_log(
+                        request,
+                        action="alert.tag_added",
+                        obj=alert,
+                        alert=alert,
+                        diff={"tag_ids": [tag.id for tag in tags], "tag_names": tag_names},
+                    )
+                    updated += 1
+                except Exception:
+                    errors += 1
+
+        return Response({"updated": updated, "errors": errors}, status=status.HTTP_200_OK)
+
     @extend_schema(
         request=CommentCreateSerializer,
         responses={200: CommentSerializer(many=True), 201: CommentSerializer},
@@ -730,6 +1072,7 @@ class AlertViewSet(viewsets.ModelViewSet):
             author=request.user,
             body=serializer.validated_data["body"],
         )
+        self._create_mention_notifications(request, alert, comment.body)
         create_audit_log(
             request,
             action="alert.comment_added",
@@ -952,7 +1295,38 @@ class AlertViewSet(viewsets.ModelViewSet):
         serializer = AlertTimelineEventSerializer(events, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(request=ExportConfigurableRequestSerializer, responses={200: "text/csv"}, tags=["Alerts"])
+    @extend_schema(request=None, responses=RelatedAlertSerializer(many=True), tags=["Alerts"])
+    @action(detail=True, methods=["get"], url_path="related")
+    def related(self, request, pk=None):
+        alert = self.get_object()
+        cutoff = timezone.now() - timedelta(days=30)
+        src_ip = self._extract_src_ip(alert)
+        rule_id = self._extract_rule_id(alert)
+
+        correlation_filter = Q()
+        if src_ip:
+            correlation_filter |= Q(raw_payload__src_ip=src_ip) | Q(raw_payload__ip=src_ip)
+        if rule_id:
+            correlation_filter |= Q(raw_payload__rule_id=rule_id)
+
+        if not correlation_filter.children:
+            return Response([], status=status.HTTP_200_OK)
+
+        queryset = (
+            self.get_queryset()
+            .filter(customer_id=alert.customer_id, created_at__gte=cutoff)
+            .filter(correlation_filter)
+            .exclude(pk=alert.pk)
+            .order_by("-created_at", "-id")[:5]
+        )
+        serializer = RelatedAlertSerializer(queryset, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=ExportConfigurableRequestSerializer,
+        responses={200: ExportPreviewResponseSerializer},
+        tags=["Alerts"],
+    )
     @action(detail=False, methods=["post"], url_path="export-configurable")
     def export_configurable(self, request):
         if not has_capability(request.user, CAP_EXPORT):
@@ -979,6 +1353,8 @@ class AlertViewSet(viewsets.ModelViewSet):
             "event_timestamp",
         ]
         all_results = payload.get("all_results", True)
+        preview = payload.get("preview", False)
+        preview_limit = payload.get("limit", 5)
         search_request = self._parse_search_payload_for_export(payload)
         alert_ids = self._collect_alert_ids_for_export(search_request, all_results=all_results)
 
@@ -990,16 +1366,11 @@ class AlertViewSet(viewsets.ModelViewSet):
         }
         ordered_alerts = [alerts_map[item_id] for item_id in alert_ids if item_id in alerts_map]
 
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="alerts-configurable.csv"'
-
-        writer = csv.writer(response)
-        writer.writerow(columns)
-
-        for alert in ordered_alerts:
+        def _build_export_row(alert):
             tags_value = ",".join([tag.name for tag in [item.tag for item in alert.alert_tags.select_related("tag")]])
             occurrence = getattr(alert, "occurrence", None)
             row = []
+            row_map = {}
             for column in columns:
                 if column.startswith("dyn:"):
                     dynamic_path = column[4:]
@@ -1007,6 +1378,7 @@ class AlertViewSet(viewsets.ModelViewSet):
                     if dynamic_value is None:
                         dynamic_value = extract_path(alert.raw_payload, dynamic_path)
                     row.append(dynamic_value)
+                    row_map[column] = dynamic_value
                     continue
 
                 value_map = {
@@ -1030,7 +1402,33 @@ class AlertViewSet(viewsets.ModelViewSet):
                     "occurrence_count": occurrence.count if occurrence else 1,
                     "parse_error_detail": alert.parse_error_detail,
                 }
-                row.append(value_map.get(column, ""))
+                value = value_map.get(column, "")
+                row.append(value)
+                row_map[column] = value
+            return row, row_map
+
+        if preview:
+            rows = []
+            for alert in ordered_alerts[:preview_limit]:
+                _, row_map = _build_export_row(alert)
+                rows.append(row_map)
+            return Response(
+                {
+                    "count": len(alert_ids),
+                    "rows": rows,
+                    "columns": columns,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="alerts-configurable.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(columns)
+
+        for alert in ordered_alerts:
+            row, _ = _build_export_row(alert)
             writer.writerow(row)
 
         return response
@@ -1093,6 +1491,44 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
                 queryset = queryset.filter(timestamp__lte=to_parsed)
 
         return queryset
+
+
+class SLAConfigView(APIView):
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
+
+    @extend_schema(request=None, responses=SLAConfigSerializer(many=True), tags=["Alerts"])
+    def get(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)
+        serializer = SLAConfigSerializer(SLAConfig.objects.all().order_by("severity", "id"), many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(request=SLAConfigSerializer, responses=SLAConfigSerializer, tags=["Alerts"])
+    def post(self, request):
+        if not has_capability(request.user, CAP_MANAGE_CUSTOMERS):
+            return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = SLAConfigSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        config, _ = SLAConfig.objects.update_or_create(
+            severity=payload["severity"],
+            defaults={
+                "response_minutes": payload["response_minutes"],
+                "resolution_minutes": payload["resolution_minutes"],
+            },
+        )
+        create_audit_log(
+            request,
+            action="sla_config.updated",
+            obj=config,
+            diff={
+                "severity": config.severity,
+                "response_minutes": config.response_minutes,
+                "resolution_minutes": config.resolution_minutes,
+            },
+        )
+        return Response(SLAConfigSerializer(config).data, status=status.HTTP_200_OK)
 
 
 class SavedSearchViewSet(viewsets.ModelViewSet):
@@ -1303,10 +1739,18 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationEventSerializer
     permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
+    @staticmethod
+    def _apply_target_user_filter(queryset, user):
+        return queryset.filter(Q(metadata__target_user_id__isnull=True) | Q(metadata__target_user_id=user.id))
+
     def get_queryset(self):
         if not has_capability(self.request.user, CAP_VIEW):
             return NotificationEvent.objects.none()
-        queryset = NotificationEvent.objects.select_related("alert", "customer").filter(is_active=True)
+        now = timezone.now()
+        queryset = NotificationEvent.objects.select_related("alert", "customer").filter(
+            is_active=True,
+        ).filter(Q(snoozed_until__isnull=True) | Q(snoozed_until__lte=now))
+        queryset = self._apply_target_user_filter(queryset, self.request.user)
         customer_id = parse_and_validate_customer_id(
             self.request.query_params.get("customer_id"),
             user=self.request.user,
@@ -1347,6 +1791,8 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
             context={"request": request, "reads_map": reads_map},
         )
         unread_queryset = NotificationEvent.objects.filter(is_active=True)
+        unread_queryset = unread_queryset.filter(Q(snoozed_until__isnull=True) | Q(snoozed_until__lte=timezone.now()))
+        unread_queryset = self._apply_target_user_filter(unread_queryset, request.user)
         if customer_id is not None:
             unread_queryset = unread_queryset.filter(customer_id=customer_id)
         else:
@@ -1365,6 +1811,8 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         unread = NotificationEvent.objects.filter(is_active=True).exclude(
             id__in=NotificationRead.objects.filter(user=request.user).values_list("notification_id", flat=True)
         )
+        unread = unread.filter(Q(snoozed_until__isnull=True) | Q(snoozed_until__lte=timezone.now()))
+        unread = self._apply_target_user_filter(unread, request.user)
         if customer_id is not None:
             unread = unread.filter(customer_id=customer_id)
         else:
@@ -1382,6 +1830,79 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         notification = self.get_object()
         NotificationRead.objects.get_or_create(notification=notification, user=request.user)
         return Response({"acknowledged": True}, status=status.HTTP_200_OK)
+
+    @extend_schema(request=NotificationSnoozeSerializer, responses=NotificationEventSerializer, tags=["Notifications"])
+    @action(detail=True, methods=["post"], url_path="snooze")
+    def snooze(self, request, pk=None):
+        notification = self.get_object()
+        serializer = NotificationSnoozeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        snooze_until = payload.get("snooze_until")
+        if snooze_until is None:
+            snooze_until = timezone.now() + timedelta(minutes=payload["minutes"])
+        notification.snoozed_until = snooze_until
+        notification.save(update_fields=["snoozed_until", "updated_at"])
+        return Response(
+            NotificationEventSerializer(notification, context={"request": request, "reads_map": {}}).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class NotificationPreferencesView(APIView):
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
+
+    @extend_schema(request=None, responses=NotificationPreferencesSerializer, tags=["Notifications"])
+    def get(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)
+        prefs = get_or_create_preferences(request.user)
+        serializer = NotificationPreferencesSerializer(prefs)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(request=NotificationPreferencesSerializer, responses=NotificationPreferencesSerializer, tags=["Notifications"])
+    def patch(self, request):
+        if not has_capability(request.user, CAP_VIEW):
+            return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)
+
+        prefs = get_or_create_preferences(request.user)
+        serializer = NotificationPreferencesSerializer(prefs, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        customer_filter = serializer.validated_data.pop("customer_filter", None)
+        prefs = serializer.save()
+        if customer_filter is not None:
+            allowed_customer_ids = get_accessible_customer_ids(request.user)
+            if allowed_customer_ids is not None:
+                customer_filter = [customer for customer in customer_filter if customer.id in allowed_customer_ids]
+            prefs.customer_filter.set(customer_filter)
+        return Response(NotificationPreferencesSerializer(prefs).data, status=status.HTTP_200_OK)
+
+
+class PushSubscriptionView(APIView):
+    permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
+
+    @extend_schema(request=PushSubscriptionUpsertSerializer, responses=PushSubscriptionSerializer, tags=["Notifications"])
+    def post(self, request):
+        if not bool(getattr(settings, "ENABLE_BROWSER_PUSH", False)):
+            return Response({"detail": "Browser push disabilitato"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = PushSubscriptionUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        keys = payload["keys"]
+
+        subscription, _ = PushSubscription.objects.update_or_create(
+            user=request.user,
+            endpoint=payload["endpoint"],
+            defaults={
+                "p256dh": keys["p256dh"],
+                "auth": keys["auth"],
+                "is_active": True,
+                "user_agent": request.META.get("HTTP_USER_AGENT", "")[:255],
+            },
+        )
+        return Response(PushSubscriptionSerializer(subscription).data, status=status.HTTP_200_OK)
 
 
 class AttachmentDownloadView(APIView):
@@ -1499,6 +2020,7 @@ class AlertSearchView(APIView):
         serializer = AlertSearchRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = dict(serializer.validated_data)
+        filter_helper = AbstractBaseFilter(request.user)
         if "customer_id" not in payload:
             query_customer_id = parse_and_validate_customer_id(
                 request.query_params.get("customer_id"),
@@ -1509,6 +2031,8 @@ class AlertSearchView(APIView):
                 payload["customer_id"] = query_customer_id
         elif payload.get("customer_id") is not None:
             ensure_customer_capability(request.user, payload.get("customer_id"), CAP_VIEW)
+
+        assignee_id = filter_helper.resolve_assignee(payload.get("assignee"))
 
         search_request = SearchRequest(
             customer_id=payload.get("customer_id"),
@@ -1524,6 +2048,8 @@ class AlertSearchView(APIView):
             event_timestamp_from=payload.get("event_timestamp_from"),
             event_timestamp_to=payload.get("event_timestamp_to"),
             is_active=payload.get("is_active"),
+            assigned_to_id=assignee_id,
+            in_state_since=payload.get("in_state_since"),
             dynamic_filters=payload.get("dynamic_filters", []),
             ordering=payload.get("ordering", "-event_timestamp"),
             page=payload.get("page", 1),

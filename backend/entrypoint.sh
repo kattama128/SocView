@@ -28,4 +28,4 @@ python manage.py migrate_schemas --shared --noinput
 python manage.py migrate_schemas --tenant --noinput
 python manage.py collectstatic --noinput
 
-exec python manage.py runserver 0.0.0.0:8000
+exec daphne -b 0.0.0.0 -p 8000 socview.asgi:application

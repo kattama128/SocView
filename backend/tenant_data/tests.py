@@ -4,6 +4,7 @@ import json
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, override_settings
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIClient
@@ -17,6 +18,7 @@ from tenant_data.models import (
     AlertOccurrence,
     AlertState,
     AlertTag,
+    Assignment,
     Attachment,
     Customer,
     CustomerMembership,
@@ -25,13 +27,20 @@ from tenant_data.models import (
     DedupPolicy,
     IngestionEventLog,
     IngestionRun,
+    NotificationEvent,
+    NotificationPreferences,
     ParserDefinition,
     ParserRevision,
+    ParserTestCase,
+    PushSubscription,
+    SLAConfig,
     Source,
     SourceAlertTypeRule,
     SourceConfig,
     Tag,
 )
+from tenant_data.tasks import extract_iocs_task
+from tenant_data.tasks import unsnooze_notifications_task
 
 
 class BaseTenantTestCase(TenantTestCase):
@@ -617,6 +626,121 @@ class SourceApiTests(BaseTenantTestCase):
         self.assertIsNotNone(parser_definition.active_revision)
         self.assertIn("host.name", parser_definition.active_revision.config_text)
 
+    def _create_run(
+        self,
+        source,
+        *,
+        status,
+        started_at,
+        finished_at,
+        processed_count,
+        error_message="",
+        error_detail=None,
+    ):
+        run = IngestionRun.objects.create(
+            source=source,
+            status=status,
+            trigger=IngestionRun.Trigger.MANUAL,
+            processed_count=processed_count,
+            created_count=0,
+            updated_count=0,
+            error_count=1 if status == IngestionRun.Status.ERROR else 0,
+            error_message=error_message,
+            error_detail=error_detail,
+        )
+        IngestionRun.objects.filter(id=run.id).update(started_at=started_at, finished_at=finished_at)
+        run.refresh_from_db()
+        return run
+
+    def test_source_stats_endpoint_returns_aggregated_metrics(self):
+        create_response = self._create_source(source_type="rest")
+        self.assertEqual(create_response.status_code, 201, create_response.data)
+        source = Source.objects.get(id=create_response.data["id"])
+
+        now = timezone.now()
+        self._create_run(
+            source,
+            status=IngestionRun.Status.SUCCESS,
+            started_at=now - timedelta(hours=2),
+            finished_at=now - timedelta(hours=1, minutes=30),
+            processed_count=100,
+        )
+        latest_error = self._create_run(
+            source,
+            status=IngestionRun.Status.ERROR,
+            started_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(minutes=50),
+            processed_count=10,
+            error_message="HTTP 500 upstream",
+            error_detail={"stack": "Traceback..."},
+        )
+        self._create_run(
+            source,
+            status=IngestionRun.Status.PARTIAL,
+            started_at=now - timedelta(days=2, minutes=5),
+            finished_at=now - timedelta(days=2),
+            processed_count=60,
+        )
+        self._create_run(
+            source,
+            status=IngestionRun.Status.ERROR,
+            started_at=now - timedelta(days=8),
+            finished_at=now - timedelta(days=8, minutes=-10),
+            processed_count=5,
+            error_message="Too old for 7d window",
+            error_detail={"kind": "old"},
+        )
+
+        response = self.client.get(
+            f"/api/ingestion/sources/{source.id}/stats/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["last_run_status"], IngestionRun.Status.ERROR)
+        self.assertEqual(parse_datetime(response.data["last_run_at"]), latest_error.started_at)
+        self.assertEqual(response.data["runs_today"], 2)
+        self.assertEqual(response.data["records_today"], 110)
+        self.assertAlmostEqual(response.data["error_rate_7d"], 0.3333, places=4)
+        self.assertAlmostEqual(response.data["avg_duration_seconds"], 1200.0, places=2)
+
+    def test_source_error_log_endpoint_returns_latest_20_error_runs(self):
+        create_response = self._create_source(source_type="rest")
+        self.assertEqual(create_response.status_code, 201, create_response.data)
+        source = Source.objects.get(id=create_response.data["id"])
+
+        now = timezone.now()
+        created_ids = []
+        for index in range(25):
+            run = self._create_run(
+                source,
+                status=IngestionRun.Status.ERROR,
+                started_at=now - timedelta(minutes=index),
+                finished_at=now - timedelta(minutes=index - 1),
+                processed_count=0,
+                error_message=f"Errore #{index}",
+                error_detail={"line": index, "message": "stack trace"},
+            )
+            created_ids.append(run.id)
+
+        self._create_run(
+            source,
+            status=IngestionRun.Status.SUCCESS,
+            started_at=now - timedelta(days=1),
+            finished_at=now - timedelta(days=1, minutes=-2),
+            processed_count=22,
+        )
+
+        response = self.client.get(
+            f"/api/ingestion/sources/{source.id}/error-log/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data), 20)
+        self.assertTrue(all(item["status"] == IngestionRun.Status.ERROR for item in response.data))
+        self.assertEqual(response.data[0]["id"], created_ids[0])
+        self.assertEqual(response.data[0]["error_message"], "Errore #0")
+        self.assertEqual(response.data[0]["error_detail"]["line"], 0)
+
 
 class CustomerSettingsApiTests(BaseTenantTestCase):
     def setUp(self):
@@ -941,6 +1065,7 @@ class SearchApiTests(BaseTenantTestCase):
             dedup_fingerprint="search-2",
         )
         AlertTag.objects.create(alert=self.alert_2, tag=self.tag_noise)
+        Assignment.objects.create(alert=self.alert_1, assigned_to=self.manager, assigned_by=self.manager)
 
         self.global_source_edr = Source.objects.create(
             name="edr-feed",
@@ -1097,6 +1222,56 @@ class SearchApiTests(BaseTenantTestCase):
                 "page_size": 25,
             },
             format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.alert_1.id)
+
+    def test_search_supports_assignee_me_in_state_since_and_multi_ordering(self):
+        old_timestamp = timezone.now() - timedelta(days=2)
+        Alert.objects.filter(pk=self.alert_1.pk).update(created_at=old_timestamp)
+
+        response = self.client.post(
+            "/api/alerts/search/",
+            data={
+                "assignee": "me",
+                "in_state_since": (timezone.now() - timedelta(hours=24)).isoformat(),
+                "ordering": "severity,-created_at",
+                "page": 1,
+                "page_size": 25,
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.alert_1.id)
+
+    def test_bulk_action_supports_select_all_with_filters(self):
+        response = self.client.post(
+            "/api/alerts/alerts/bulk-action/",
+            data={
+                "action": "add_tag",
+                "select_all": True,
+                "filters": {
+                    "assignee": "me",
+                    "page": 1,
+                    "page_size": 25,
+                },
+                "tag_ids": [self.tag_noise.id],
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["errors"], 0)
+        self.assertGreaterEqual(response.data["updated"], 1)
+        self.assertTrue(AlertTag.objects.filter(alert=self.alert_1, tag=self.tag_noise).exists())
+
+    def test_alert_list_supports_assignee_me_query_param(self):
+        response = self.client.get(
+            "/api/alerts/alerts/?assignee=me",
             HTTP_HOST="test.localhost",
         )
         self.assertEqual(response.status_code, 200)
@@ -1279,6 +1454,7 @@ class SmokeApiTests(BaseTenantTestCase):
         self.assertEqual(health.status_code, 200)
         self.assertEqual(ready.status_code, 200)
         self.assertEqual(docs.status_code, 200)
+        self.assertIn("celery", ready.data.get("checks", {}))
 
     def test_dashboard_notifications_and_export_endpoints(self):
         widgets = self.client.get("/api/core/dashboard/widgets/", HTTP_HOST="test.localhost")
@@ -1342,6 +1518,23 @@ class SmokeApiTests(BaseTenantTestCase):
         self.assertIn("id,title,severity,dyn:event.id", body)
         self.assertIn("Alert smoke critico", body)
 
+        preview = self.client.post(
+            "/api/alerts/alerts/export-configurable/",
+            data={
+                "text": "smoke",
+                "columns": ["id", "title", "severity"],
+                "preview": True,
+                "limit": 5,
+                "all_results": True,
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn("count", preview.data)
+        self.assertIn("rows", preview.data)
+        self.assertEqual(preview.data["columns"], ["id", "title", "severity"])
+
     def test_tenant_endpoints_blocked_on_public_schema(self):
         notifications = self.client.get("/api/alerts/notifications/", HTTP_HOST="localhost")
         search = self.client.post(
@@ -1352,6 +1545,150 @@ class SmokeApiTests(BaseTenantTestCase):
         )
         self.assertEqual(notifications.status_code, 403)
         self.assertEqual(search.status_code, 403)
+
+
+class NotificationCenterApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="notif-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+        self.open_state = AlertState.objects.create(name="Notif Open", order=0, is_final=False, is_enabled=True)
+        self.customer_a = Customer.objects.create(name="Notif Customer A", code="NCA")
+        self.customer_b = Customer.objects.create(name="Notif Customer B", code="NCB")
+        CustomerMembership.objects.create(
+            user=self.manager,
+            customer=self.customer_a,
+            scope=CustomerMembership.Scope.MANAGER,
+            is_active=True,
+        )
+
+        self.alert = Alert.objects.create(
+            title="Alert notifica",
+            customer=self.customer_a,
+            severity=Alert.Severity.CRITICAL,
+            event_timestamp=timezone.now(),
+            source_name="notif-source",
+            source_id="notif-1",
+            current_state=self.open_state,
+            dedup_fingerprint="notif-fp-1",
+        )
+
+        self.notification = NotificationEvent.objects.create(
+            alert=self.alert,
+            customer=self.customer_a,
+            title="Notifica test",
+            message="Messaggio test",
+            severity=NotificationEvent.Severity.HIGH,
+            metadata={"target_user_id": self.manager.id},
+            is_active=True,
+        )
+
+    def test_notification_preferences_get_and_patch(self):
+        get_response = self.client.get("/api/alerts/notification-preferences/", HTTP_HOST="test.localhost")
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.data["min_severity"], "all")
+        self.assertEqual(get_response.data["channels"]["ui"], True)
+
+        patch_response = self.client.patch(
+            "/api/alerts/notification-preferences/",
+            data={
+                "min_severity": "high",
+                "customer_filter": [self.customer_a.id],
+                "channels": {"ui": True, "email": True},
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        self.assertEqual(patch_response.data["min_severity"], "high")
+        self.assertEqual(patch_response.data["channels"]["email"], True)
+        prefs = NotificationPreferences.objects.get(user=self.manager)
+        self.assertEqual(list(prefs.customer_filter.values_list("id", flat=True)), [self.customer_a.id])
+
+    def test_snooze_endpoint_hides_until_unsnooze_task_runs(self):
+        snooze_response = self.client.post(
+            f"/api/alerts/notifications/{self.notification.id}/snooze/",
+            data={"minutes": 15},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(snooze_response.status_code, 200)
+        self.notification.refresh_from_db()
+        self.assertIsNotNone(self.notification.snoozed_until)
+
+        list_response = self.client.get("/api/alerts/notifications/", HTTP_HOST="test.localhost")
+        self.assertEqual(list_response.status_code, 200)
+        listed_ids = [item["id"] for item in list_response.data["results"]]
+        self.assertNotIn(self.notification.id, listed_ids)
+
+        NotificationEvent.objects.filter(id=self.notification.id).update(
+            snoozed_until=timezone.now() - timedelta(minutes=1)
+        )
+        task_result = unsnooze_notifications_task()
+        self.assertGreaterEqual(task_result["updated"], 1)
+        self.notification.refresh_from_db()
+        self.assertIsNone(self.notification.snoozed_until)
+
+    @override_settings(ENABLE_BROWSER_PUSH=True)
+    def test_push_subscription_endpoint_upserts_subscription(self):
+        response = self.client.post(
+            "/api/alerts/push-subscriptions/",
+            data={
+                "endpoint": "https://push.example/endpoint-1",
+                "keys": {"p256dh": "abc", "auth": "def"},
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(PushSubscription.objects.filter(user=self.manager).count(), 1)
+
+    def test_critical_notification_respects_user_preferences(self):
+        prefs, _ = NotificationPreferences.objects.get_or_create(user=self.manager)
+        prefs.min_severity = NotificationPreferences.MinSeverity.CRITICAL
+        prefs.channels = {"ui": True, "email": False}
+        prefs.save(update_fields=["min_severity", "channels", "updated_at"])
+        prefs.customer_filter.add(self.customer_b)
+
+        high_alert = Alert.objects.create(
+            title="High alert no notif",
+            customer=self.customer_a,
+            severity=Alert.Severity.HIGH,
+            event_timestamp=timezone.now(),
+            source_name="notif-source",
+            source_id="notif-high",
+            current_state=self.open_state,
+            dedup_fingerprint="notif-high-fp",
+        )
+        self.assertFalse(
+            NotificationEvent.objects.filter(
+                alert=high_alert,
+                metadata__target_user_id=self.manager.id,
+                metadata__kind="critical_alert",
+            ).exists()
+        )
+
+        critical_alert = Alert.objects.create(
+            title="Critical alert filtered customer",
+            customer=self.customer_a,
+            severity=Alert.Severity.CRITICAL,
+            event_timestamp=timezone.now(),
+            source_name="notif-source",
+            source_id="notif-critical",
+            current_state=self.open_state,
+            dedup_fingerprint="notif-critical-fp",
+        )
+        self.assertFalse(
+            NotificationEvent.objects.filter(
+                alert=critical_alert,
+                metadata__target_user_id=self.manager.id,
+                metadata__kind="critical_alert",
+            ).exists()
+        )
 
 
 class PublicDashboardApiTests(BaseTenantTestCase):
@@ -1379,6 +1716,273 @@ class PublicDashboardApiTests(BaseTenantTestCase):
         )
         self.assertEqual(reorder.status_code, 200)
         self.assertEqual(reorder.data["schema_order"], [self.tenant.schema_name])
+
+
+class AlertSummaryApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="summary-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        self.open_state = AlertState.objects.create(name="Nuovo summary", order=0, is_final=False, is_enabled=True)
+        self.closed_state = AlertState.objects.create(name="Risolto summary", order=1, is_final=True, is_enabled=True)
+
+        now = timezone.now()
+        self.open_today = Alert.objects.create(
+            title="Open today",
+            severity="high",
+            event_timestamp=now,
+            source_name="summary-source",
+            source_id="summary-open-today",
+            current_state=self.open_state,
+            dedup_fingerprint="summary-open-today",
+        )
+        self.open_yesterday = Alert.objects.create(
+            title="Open yesterday",
+            severity="low",
+            event_timestamp=now - timedelta(days=1),
+            source_name="summary-source",
+            source_id="summary-open-yesterday",
+            current_state=self.open_state,
+            dedup_fingerprint="summary-open-yesterday",
+        )
+        Alert.objects.filter(pk=self.open_yesterday.pk).update(created_at=now - timedelta(days=1, hours=2))
+
+        self.closed_alert = Alert.objects.create(
+            title="Closed mttr",
+            severity="critical",
+            event_timestamp=now - timedelta(hours=2),
+            source_name="summary-source",
+            source_id="summary-closed",
+            current_state=self.closed_state,
+            dedup_fingerprint="summary-closed",
+        )
+        Alert.objects.filter(pk=self.closed_alert.pk).update(
+            created_at=now - timedelta(hours=3),
+            updated_at=now - timedelta(hours=1),
+        )
+
+    def test_alert_summary_severity_returns_aggregated_counts(self):
+        response = self.client.get(
+            "/api/alerts/alerts/?summary=severity",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"], "severity")
+        counts = {item["severity"]: item["count"] for item in response.data["items"]}
+        self.assertEqual(counts["critical"], 1)
+        self.assertEqual(counts["high"], 1)
+        self.assertEqual(counts["low"], 1)
+
+    def test_alert_summary_mttr_and_state_category_filters(self):
+        mttr_response = self.client.get(
+            "/api/alerts/alerts/?summary=mttr&state__category=closed",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(mttr_response.status_code, 200)
+        self.assertEqual(mttr_response.data["summary"], "mttr")
+        self.assertEqual(mttr_response.data["sample_size"], 1)
+        self.assertEqual(mttr_response.data["avg_minutes"], 120)
+
+        created_after = (timezone.now() + timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        open_response = self.client.get(
+            f"/api/alerts/alerts/?state__category=open&created_after={created_after}",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(open_response.status_code, 200)
+        self.assertEqual(open_response.data["count"], 0)
+
+
+class AlertDetailEnhancementsTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.mentioned_client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="detail-enh-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.mentioned_user = get_user_model().objects.create_user(
+            username="soc-mentioned",
+            password="Analyst123!",
+            role="SOC_ANALYST",
+        )
+        self.client.force_authenticate(user=self.manager)
+        self.mentioned_client.force_authenticate(user=self.mentioned_user)
+
+        self.open_state = AlertState.objects.create(name="Nuovo detail", order=0, is_final=False, is_enabled=True)
+        self.closed_state = AlertState.objects.create(name="Chiuso detail", order=1, is_final=True, is_enabled=True)
+        self.customer = Customer.objects.create(name="Detail Customer", code="DET")
+
+        CustomerMembership.objects.create(
+            user=self.manager,
+            customer=self.customer,
+            scope=CustomerMembership.Scope.MANAGER,
+            is_active=True,
+        )
+        CustomerMembership.objects.create(
+            user=self.mentioned_user,
+            customer=self.customer,
+            scope=CustomerMembership.Scope.TRIAGE,
+            is_active=True,
+        )
+
+        now = timezone.now()
+        self.base_alert = Alert.objects.create(
+            title="Base alert detail",
+            customer=self.customer,
+            severity="high",
+            event_timestamp=now,
+            source_name="detail-source",
+            source_id="detail-base",
+            raw_payload={
+                "src_ip": "8.8.8.8",
+                "rule_id": "RULE-42",
+                "extra_ip": "10.0.0.1",
+                "hash": "0123456789abcdef0123456789abcdef",
+                "url": "https://evil.example/path",
+                "email": "attacker@example.org",
+            },
+            current_state=self.open_state,
+            dedup_fingerprint="detail-base-fp",
+        )
+        Alert.objects.filter(pk=self.base_alert.pk).update(created_at=now - timedelta(minutes=30))
+
+        self.related_by_ip = Alert.objects.create(
+            title="Related by IP",
+            customer=self.customer,
+            severity="medium",
+            event_timestamp=now - timedelta(minutes=20),
+            source_name="detail-source",
+            source_id="detail-ip",
+            raw_payload={"src_ip": "8.8.8.8", "rule_id": "RULE-X"},
+            current_state=self.open_state,
+            dedup_fingerprint="detail-ip-fp",
+        )
+        Alert.objects.filter(pk=self.related_by_ip.pk).update(created_at=now - timedelta(minutes=20))
+
+        self.related_by_rule = Alert.objects.create(
+            title="Related by Rule",
+            customer=self.customer,
+            severity="critical",
+            event_timestamp=now - timedelta(minutes=10),
+            source_name="detail-source",
+            source_id="detail-rule",
+            raw_payload={"src_ip": "203.0.113.9", "rule_id": "RULE-42"},
+            current_state=self.open_state,
+            dedup_fingerprint="detail-rule-fp",
+        )
+        Alert.objects.filter(pk=self.related_by_rule.pk).update(created_at=now - timedelta(minutes=10))
+
+        self.unrelated_alert = Alert.objects.create(
+            title="Unrelated alert",
+            customer=self.customer,
+            severity="low",
+            event_timestamp=now,
+            source_name="detail-source",
+            source_id="detail-unrelated",
+            raw_payload={"src_ip": "203.0.113.7", "rule_id": "RULE-OTHER"},
+            current_state=self.open_state,
+            dedup_fingerprint="detail-unrelated-fp",
+        )
+        Alert.objects.filter(pk=self.unrelated_alert.pk).update(created_at=now - timedelta(minutes=5))
+
+        old_related = Alert.objects.create(
+            title="Old related",
+            customer=self.customer,
+            severity="low",
+            event_timestamp=now - timedelta(days=40),
+            source_name="detail-source",
+            source_id="detail-old",
+            raw_payload={"src_ip": "8.8.8.8", "rule_id": "RULE-42"},
+            current_state=self.open_state,
+            dedup_fingerprint="detail-old-fp",
+        )
+        Alert.objects.filter(pk=old_related.pk).update(created_at=now - timedelta(days=40))
+
+    def test_related_endpoint_returns_recent_alerts_for_same_customer(self):
+        response = self.client.get(
+            f"/api/alerts/alerts/{self.base_alert.id}/related/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 200)
+        ids = [item["id"] for item in response.data]
+        self.assertIn(self.related_by_ip.id, ids)
+        self.assertIn(self.related_by_rule.id, ids)
+        self.assertNotIn(self.unrelated_alert.id, ids)
+        self.assertLessEqual(len(ids), 5)
+        self.assertEqual(ids[0], self.related_by_rule.id)
+
+    def test_sla_config_endpoint_and_alert_detail_sla_status(self):
+        create_response = self.client.post(
+            "/api/alerts/sla-config/",
+            data={"severity": "high", "response_minutes": 120, "resolution_minutes": 480},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(SLAConfig.objects.filter(severity="high").count(), 1)
+
+        list_response = self.client.get("/api/alerts/sla-config/", HTTP_HOST="test.localhost")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertTrue(any(item["severity"] == "high" for item in list_response.data))
+
+        detail_response = self.client.get(
+            f"/api/alerts/alerts/{self.base_alert.id}/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertIn("sla_status", detail_response.data)
+        self.assertEqual(detail_response.data["sla_status"]["response"], "ok")
+        self.assertGreater(detail_response.data["sla_status"]["response_remaining_minutes"], 0)
+
+    def test_comment_mentions_create_targeted_notifications(self):
+        response = self.client.post(
+            f"/api/alerts/alerts/{self.base_alert.id}/comments/",
+            data={"body": "Coinvolgo @soc-mentioned per verifica IOC"},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(
+            NotificationEvent.objects.filter(
+                alert=self.base_alert,
+                metadata__mention=True,
+                metadata__target_user_id=self.mentioned_user.id,
+            ).exists()
+        )
+
+        mentioned_notifications = self.mentioned_client.get("/api/alerts/notifications/", HTTP_HOST="test.localhost")
+        self.assertEqual(mentioned_notifications.status_code, 200)
+        self.assertTrue(
+            any(
+                item["metadata"].get("target_user_id") == self.mentioned_user.id
+                for item in mentioned_notifications.data["results"]
+            )
+        )
+
+        author_notifications = self.client.get("/api/alerts/notifications/", HTTP_HOST="test.localhost")
+        self.assertEqual(author_notifications.status_code, 200)
+        self.assertFalse(
+            any(
+                item["metadata"].get("target_user_id") == self.mentioned_user.id
+                for item in author_notifications.data["results"]
+            )
+        )
+
+    def test_extract_iocs_task_populates_alert_iocs(self):
+        result = extract_iocs_task(self.tenant.schema_name, self.base_alert.id)
+        self.assertTrue(result.get("ok"))
+        self.base_alert.refresh_from_db()
+        self.assertIn("8.8.8.8", self.base_alert.iocs.get("ips", []))
+        self.assertNotIn("10.0.0.1", self.base_alert.iocs.get("ips", []))
+        self.assertIn("0123456789abcdef0123456789abcdef", self.base_alert.iocs.get("hashes", []))
+        self.assertIn("https://evil.example/path", self.base_alert.iocs.get("urls", []))
+        self.assertIn("attacker@example.org", self.base_alert.iocs.get("emails", []))
 
 
 class CustomerMembershipEnforcementTests(BaseTenantTestCase):
@@ -1757,3 +2361,246 @@ class AttachmentSecurityTests(BaseTenantTestCase):
             ).exists()
         )
         self.assertTrue(SecurityAuditEvent.objects.filter(action="attachment.uploaded").exists())
+
+class ParserAdvancedApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="parser-advanced-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        self.source = Source.objects.create(
+            name="Parser Advanced Source",
+            type=Source.Type.REST,
+            is_enabled=True,
+            severity_map={"field": "severity", "default": "medium", "map": {}},
+        )
+
+        self.config_v1 = {
+            "extract": [{"type": "jsonpath", "name": "event_id", "path": "$.event_id"}],
+            "transform": [],
+            "normalize": {"ecs": {"event.id": "event_id"}},
+            "output": {"mode": "normalized"},
+        }
+        self.config_v2 = {
+            "extract": [
+                {"type": "jsonpath", "name": "event_id", "path": "$.event_id"},
+                {"type": "jsonpath", "name": "severity", "path": "$.severity"},
+            ],
+            "transform": [],
+            "normalize": {"ecs": {"event.id": "event_id", "event.severity": "severity"}},
+            "output": {"mode": "normalized"},
+        }
+
+        create_response = self.client.post(
+            "/api/ingestion/parsers/",
+            data={
+                "source": self.source.id,
+                "name": "Parser Advanced",
+                "description": "Parser con revisioni avanzate",
+                "is_enabled": True,
+                "config_text": json.dumps(self.config_v1),
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(create_response.status_code, 201, create_response.data)
+        self.parser_id = create_response.data["id"]
+
+        patch_response = self.client.patch(
+            f"/api/ingestion/parsers/{self.parser_id}/",
+            data={"config_text": json.dumps(self.config_v2)},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(patch_response.status_code, 200, patch_response.data)
+
+    def test_revisions_diff_test_cases_and_raw_event_preview(self):
+        revisions_response = self.client.get(
+            f"/api/ingestion/parsers/{self.parser_id}/revisions/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(revisions_response.status_code, 200)
+        self.assertGreaterEqual(len(revisions_response.data), 2)
+
+        left = revisions_response.data[0]["revision_id"]
+        right = revisions_response.data[1]["revision_id"]
+        diff_response = self.client.get(
+            f"/api/ingestion/parsers/{self.parser_id}/revisions/{left}/diff/?compare_to={right}",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(diff_response.status_code, 200)
+        self.assertIn("diff", diff_response.data)
+
+        preview_response = self.client.post(
+            f"/api/ingestion/parsers/{self.parser_id}/preview/",
+            data={"raw_event": "evento raw di test"},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertTrue(preview_response.data["ok"])
+
+        create_tc_response = self.client.post(
+            f"/api/ingestion/parsers/{self.parser_id}/test-cases/",
+            data={
+                "name": "TC-1",
+                "input_raw": '{"event_id":"tc-1","severity":"high"}',
+                "expected_output": {"event": {"id": "tc-1", "severity": "high"}},
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(create_tc_response.status_code, 201, create_tc_response.data)
+        test_case_id = create_tc_response.data["id"]
+
+        list_tc_response = self.client.get(
+            f"/api/ingestion/parsers/{self.parser_id}/test-cases/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(list_tc_response.status_code, 200)
+        self.assertEqual(len(list_tc_response.data), 1)
+
+        run_all_response = self.client.post(
+            f"/api/ingestion/parsers/{self.parser_id}/test-cases/run-all/",
+            data={},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(run_all_response.status_code, 200)
+        self.assertEqual(run_all_response.data["passed"], 1)
+        self.assertEqual(run_all_response.data["failed"], 0)
+
+        delete_response = self.client.delete(
+            f"/api/ingestion/parsers/{self.parser_id}/test-cases/{test_case_id}/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertFalse(ParserTestCase.objects.filter(id=test_case_id).exists())
+
+
+class AnalyticsApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="analytics-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.client.force_authenticate(user=self.manager)
+
+        self.open_state = AlertState.objects.create(name="Open analytics", order=0, is_final=False, is_enabled=True)
+        self.closed_state = AlertState.objects.create(name="Closed analytics", order=1, is_final=True, is_enabled=True)
+        self.customer = Customer.objects.create(name="Analytics Customer", code="AN")
+        self.source = Source.objects.create(
+            name="Analytics Source",
+            type=Source.Type.REST,
+            is_enabled=True,
+            severity_map={"field": "severity", "default": "medium", "map": {}},
+        )
+
+        now = timezone.now()
+        alert_open = Alert.objects.create(
+            title="Open analytics alert",
+            severity=Alert.Severity.HIGH,
+            event_timestamp=now,
+            source_name=self.source.name,
+            source_id="analytics-open-1",
+            customer=self.customer,
+            current_state=self.open_state,
+            dedup_fingerprint="analytics-open-1",
+        )
+        alert_closed = Alert.objects.create(
+            title="Closed analytics alert",
+            severity=Alert.Severity.CRITICAL,
+            event_timestamp=now - timedelta(hours=2),
+            source_name=self.source.name,
+            source_id="analytics-closed-1",
+            customer=self.customer,
+            current_state=self.closed_state,
+            dedup_fingerprint="analytics-closed-1",
+        )
+        Alert.objects.filter(id=alert_closed.id).update(
+            created_at=now - timedelta(hours=4),
+            updated_at=now - timedelta(hours=1),
+        )
+        IngestionRun.objects.create(
+            source=self.source,
+            customer=self.customer,
+            trigger=IngestionRun.Trigger.MANUAL,
+            status=IngestionRun.Status.SUCCESS,
+            processed_count=50,
+            created_count=1,
+            updated_count=0,
+            error_count=0,
+            metadata={},
+        )
+        SLAConfig.objects.create(severity=Alert.Severity.CRITICAL, response_minutes=60, resolution_minutes=240)
+        SLAConfig.objects.create(severity=Alert.Severity.HIGH, response_minutes=120, resolution_minutes=360)
+
+    def test_analytics_endpoints_return_payloads(self):
+        params = "from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z"
+
+        overview_response = self.client.get(f"/api/alerts/analytics/overview/?{params}", HTTP_HOST="test.localhost")
+        self.assertEqual(overview_response.status_code, 200)
+        self.assertIn("kpis", overview_response.data)
+
+        by_source_response = self.client.get(f"/api/alerts/analytics/by-source/?{params}", HTTP_HOST="test.localhost")
+        self.assertEqual(by_source_response.status_code, 200)
+        self.assertGreaterEqual(len(by_source_response.data), 1)
+
+        by_customer_response = self.client.get(f"/api/alerts/analytics/by-customer/?{params}", HTTP_HOST="test.localhost")
+        self.assertEqual(by_customer_response.status_code, 200)
+        self.assertGreaterEqual(len(by_customer_response.data), 1)
+
+        heatmap_response = self.client.get(f"/api/alerts/analytics/heatmap/?{params}", HTTP_HOST="test.localhost")
+        self.assertEqual(heatmap_response.status_code, 200)
+        self.assertIn("matrix", heatmap_response.data)
+        self.assertEqual(len(heatmap_response.data["matrix"]), 7)
+        self.assertEqual(len(heatmap_response.data["matrix"][0]), 24)
+
+
+class CustomerMembershipApiTests(BaseTenantTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.manager = get_user_model().objects.create_user(
+            username="membership-manager",
+            password="Manager123!",
+            role="SOC_MANAGER",
+        )
+        self.user = get_user_model().objects.create_user(
+            username="membership-analyst",
+            password="Analyst123!",
+            role="SOC_ANALYST",
+        )
+        self.client.force_authenticate(user=self.manager)
+        self.customer = Customer.objects.create(name="Membership Customer", code="MEM")
+
+    def test_customer_membership_crud_endpoint(self):
+        upsert_response = self.client.post(
+            f"/api/alerts/customers/{self.customer.id}/memberships/",
+            data={"user_id": self.user.id, "scope": "triage", "is_active": True},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(upsert_response.status_code, 200)
+        self.assertEqual(len(upsert_response.data), 1)
+
+        list_response = self.client.get(
+            f"/api/alerts/customers/{self.customer.id}/memberships/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.data[0]["user_id"], self.user.id)
+
+        delete_response = self.client.delete(
+            f"/api/alerts/customers/{self.customer.id}/memberships/",
+            data={"user_id": self.user.id},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.data, [])

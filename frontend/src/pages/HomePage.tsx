@@ -29,13 +29,17 @@ import {
   Typography,
 } from "@mui/material";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
+import TimeRangeSelector from "../components/TimeRangeSelector";
 import { useCustomer } from "../context/CustomerContext";
+import { useTimeRange } from "../contexts/TimeRangeContext";
 import { fetchAlert, searchAlerts } from "../services/alertsApi";
-import { fetchDashboardWidgets, updateDashboardWidgetsLayout } from "../services/dashboardApi";
+import { fetchDashboardTenants, fetchDashboardWidgets, updateDashboardWidgetsLayout } from "../services/dashboardApi";
 import { surfaceCardSx } from "../styles/surfaces";
 import { Alert as AlertModel } from "../types/alerts";
-import { DashboardWidgetLayoutItem, DashboardWidgetsPayload } from "../types/dashboard";
+import { DashboardTenantSummary, DashboardWidgetLayoutItem, DashboardWidgetsPayload } from "../types/dashboard";
+import { widgetRegistry } from "../widgets/widgetRegistry";
 
 type SourceItem = { source_name: string; count: number };
 type TrendPoint = { day: string; count: number };
@@ -90,12 +94,18 @@ const defaultDashboardLayout: DashboardWidgetLayoutItem[] = [
   { key: "alert_trend", enabled: true, order: 0 },
   { key: "top_sources", enabled: true, order: 1 },
   { key: "state_distribution", enabled: true, order: 2 },
+  { key: "kpi_alert_aperti", enabled: true, order: 3 },
+  { key: "kpi_mttr", enabled: true, order: 4 },
+  { key: "kpi_severity_trend", enabled: true, order: 5 },
 ];
 
 const defaultAvailableWidgets = [
   { key: "alert_trend", title: "Trend alert nel tempo", description: "Numero alert giornalieri (ultimi 7 giorni)" },
   { key: "top_sources", title: "Top fonti", description: "Fonti con piu alert" },
   { key: "state_distribution", title: "Distribuzione stati workflow", description: "Distribuzione alert per stato corrente" },
+  { key: "kpi_alert_aperti", title: "Alert Aperti Oggi", description: "Alert aperti oggi e delta vs ieri" },
+  { key: "kpi_mttr", title: "MTTR Medio (ultimi 7gg)", description: "Tempo medio chiusura alert" },
+  { key: "kpi_severity_trend", title: "Trend per Severita", description: "Conteggio alert per severita" },
 ];
 
 function shortDayLabel(isoDate: string): string {
@@ -300,6 +310,8 @@ function asStateItems(raw: unknown): StateItem[] {
 
 export default function HomePage() {
   const { selectedCustomer, selectedCustomerId } = useCustomer();
+  const navigate = useNavigate();
+  const { window: timeWindow } = useTimeRange();
 
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [alertsLoading, setAlertsLoading] = useState(true);
@@ -310,6 +322,7 @@ export default function HomePage() {
   const [success, setSuccess] = useState<string | null>(null);
 
   const [dashboard, setDashboard] = useState<DashboardWidgetsPayload | null>(null);
+  const [tenants, setTenants] = useState<DashboardTenantSummary[]>([]);
   const [alerts, setAlerts] = useState<AlertModel[]>([]);
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [layoutDraft, setLayoutDraft] = useState<DashboardWidgetLayoutItem[]>(defaultDashboardLayout);
@@ -335,7 +348,7 @@ export default function HomePage() {
     setDashboardLoading(true);
     setDashboardError(null);
     try {
-      const widgetsData = await fetchDashboardWidgets(selectedCustomerId);
+      const widgetsData = await fetchDashboardWidgets(selectedCustomerId, timeWindow);
       const nextLayout = widgetsData.widgets_layout.length ? widgetsData.widgets_layout : defaultDashboardLayout;
       setDashboard({
         ...widgetsData,
@@ -350,7 +363,7 @@ export default function HomePage() {
     } finally {
       setDashboardLoading(false);
     }
-  }, [selectedCustomerId]);
+  }, [selectedCustomerId, timeWindow]);
 
   const loadRecentAlerts = useCallback(async () => {
     setAlertsLoading(true);
@@ -361,6 +374,8 @@ export default function HomePage() {
           ordering: "-event_timestamp",
           page: 1,
           page_size: 100,
+          event_timestamp_from: timeWindow.from,
+          event_timestamp_to: timeWindow.to,
         },
         selectedCustomerId,
       );
@@ -373,12 +388,25 @@ export default function HomePage() {
     } finally {
       setAlertsLoading(false);
     }
-  }, [selectedCustomerId]);
+  }, [selectedCustomerId, timeWindow]);
+
+  const loadTenants = useCallback(async () => {
+    try {
+      const payload = await fetchDashboardTenants();
+      setTenants(payload);
+    } catch {
+      setTenants([]);
+    }
+  }, []);
 
   useEffect(() => {
     void loadDashboard();
     void loadRecentAlerts();
   }, [loadDashboard, loadRecentAlerts]);
+
+  useEffect(() => {
+    void loadTenants();
+  }, [loadTenants]);
 
   useEffect(() => {
     setExpandedRows({});
@@ -601,7 +629,7 @@ export default function HomePage() {
     setSuccess(null);
     try {
       const payload = ensureLayout(layoutDraft).map((item, index) => ({ ...item, order: index }));
-      const updated = await updateDashboardWidgetsLayout(payload, selectedCustomerId);
+      const updated = await updateDashboardWidgetsLayout(payload, selectedCustomerId, timeWindow);
       setDashboard({
         ...updated,
         available_widgets: updated.available_widgets.length ? updated.available_widgets : defaultAvailableWidgets,
@@ -712,6 +740,10 @@ export default function HomePage() {
   };
 
   const renderChartWidget = (key: string) => {
+    const DynamicWidget = widgetRegistry[key];
+    if (DynamicWidget) {
+      return <DynamicWidget customerId={selectedCustomerId} timeWindow={timeWindow} />;
+    }
     if (key === "alert_trend") return renderTrendWidget();
     if (key === "top_sources") return renderSourceWidget();
     if (key === "state_distribution") return renderStateWidget();
@@ -739,9 +771,12 @@ export default function HomePage() {
             sx={{ mt: 1, color: "#93c5fd", border: "1px solid rgba(59,130,246,0.35)", background: "rgba(30,64,175,0.18)" }}
           />
         </Box>
-        <Button variant="outlined" startIcon={<TuneIcon />} sx={{ borderColor: "rgba(71,85,105,0.55)", color: "#cbd5e1" }} onClick={(event) => setConfigAnchor(event.currentTarget)}>
-          Configura
-        </Button>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems={{ xs: "stretch", sm: "center" }}>
+          <TimeRangeSelector />
+          <Button variant="outlined" startIcon={<TuneIcon />} sx={{ borderColor: "rgba(71,85,105,0.55)", color: "#cbd5e1" }} onClick={(event) => setConfigAnchor(event.currentTarget)}>
+            Configura
+          </Button>
+        </Stack>
       </Stack>
 
       <Popover
@@ -792,7 +827,12 @@ export default function HomePage() {
                         <DragIndicatorIcon sx={{ color: "#64748b", fontSize: 18 }} />
                         <Typography sx={{ fontSize: 13 }}>{title}</Typography>
                       </Stack>
-                      <Switch size="small" checked={item.enabled} onChange={(event) => updateLayoutItem(item.key, { enabled: event.target.checked })} />
+                      <Switch
+                        size="small"
+                        checked={item.enabled}
+                        onChange={(event) => updateLayoutItem(item.key, { enabled: event.target.checked })}
+                        data-testid="widget-toggle-button"
+                      />
                     </Stack>
                   </Box>
                 );
@@ -825,7 +865,7 @@ export default function HomePage() {
           <Typography sx={{ color: "#f8fafc", fontWeight: 600, fontSize: 22 }}>Grafici</Typography>
           <Chip label={`${visibleChartWidgets.length} attivi`} size="small" sx={{ color: "#93c5fd", border: "1px solid rgba(59,130,246,0.35)", background: "rgba(30,64,175,0.18)" }} />
         </Stack>
-        {dashboardLoading ? <LinearProgress sx={{ mb: 1.8, borderRadius: 2 }} /> : null}
+        {dashboardLoading ? <LinearProgress sx={{ mb: 1.8, borderRadius: 2 }} data-testid="loading-spinner" /> : null}
         <Grid container spacing={2}>
           {!dashboardLoading && !visibleChartWidgets.length ? (
             <Grid item xs={12}>
@@ -841,12 +881,53 @@ export default function HomePage() {
               xs={12}
               md={item.key === "alert_trend" ? 12 : 6}
               lg={item.key === "alert_trend" ? 8 : 4}
+              data-testid={item.key === "kpi_alert_aperti" ? "widget-kpi-open-alerts" : `widget-${item.key}`}
             >
               {renderChartWidget(item.key)}
             </Grid>
           ))}
         </Grid>
       </Paper>
+
+      {tenants.length ? (
+        <Paper sx={{ ...panelSx, p: 2.2 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
+            <Typography sx={{ color: "#f8fafc", fontWeight: 600, fontSize: 22 }}>Tenant disponibili</Typography>
+            <Chip label={`${tenants.length} tenant`} size="small" sx={{ color: "#93c5fd", border: "1px solid rgba(59,130,246,0.35)", background: "rgba(30,64,175,0.18)" }} />
+          </Stack>
+          <Grid container spacing={1.2}>
+            {tenants.map((tenant) => (
+              <Grid key={tenant.schema_name} item xs={12} md={6} lg={4}>
+                <Paper
+                  variant="outlined"
+                  sx={{ p: 1.2, borderColor: "rgba(71,85,105,0.4)", bgcolor: "rgba(15,23,42,0.45)" }}
+                  data-testid="tenant-card"
+                >
+                  <Stack spacing={0.6}>
+                    <Typography sx={{ color: "#f8fafc", fontWeight: 600 }}>{tenant.name}</Typography>
+                    <Typography sx={{ color: "#94a3b8", fontSize: 12 }}>{tenant.schema_name}</Typography>
+                    <Typography sx={{ color: "#93c5fd", fontSize: 12 }}>Alert attivi: {tenant.active_alerts}</Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      data-testid="open-tenant-button"
+                      onClick={() => {
+                        if (tenant.entry_url) {
+                          window.open(tenant.entry_url, "_blank", "noopener,noreferrer");
+                          return;
+                        }
+                        void navigate("/");
+                      }}
+                    >
+                      Apri
+                    </Button>
+                  </Stack>
+                </Paper>
+              </Grid>
+            ))}
+          </Grid>
+        </Paper>
+      ) : null}
 
       <Paper sx={{ ...panelSx, p: 0, display: "flex", flexDirection: "column", minHeight: { xs: 420, lg: 520 } }}>
         <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} sx={{ px: 2.2, py: 1.8, borderBottom: "1px solid rgba(71,85,105,0.35)" }}>

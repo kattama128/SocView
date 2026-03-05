@@ -44,37 +44,32 @@ const run = async () => {
     await page.getByRole("button", { name: "Configura" }).waitFor();
   });
 
-  await step("Access token invalido con refresh valido -> sessione resta attiva", async () => {
-    const refreshToken = await page.evaluate(() => localStorage.getItem("socview_refresh_token"));
-    if (!refreshToken) {
-      throw new Error("Refresh token assente dopo login");
-    }
-
-    await page.evaluate(() => {
-      localStorage.setItem("socview_access_token", "invalid.access.token");
-    });
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Configura" }).waitFor();
-    if (page.url().includes("/login")) {
-      throw new Error("Redirect a login inatteso con refresh valido");
-    }
-  });
-
-  await step("Refresh invalido -> logout forzato pulito e redirect login", async () => {
-    await page.evaluate(() => {
-      localStorage.setItem("socview_access_token", "invalid.access.token");
-      localStorage.setItem("socview_refresh_token", "invalid.refresh.token");
-    });
-
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForURL(/\/login/, { timeout: 15000 });
-    const warning = page.getByText(/Sessione .* login/i).first();
-    await warning.waitFor();
-
-    const tokensLeft = await page.evaluate(() => ({
+  await step("Sessione persistente con cookie httpOnly e storage legacy vuoto", async () => {
+    const legacyTokens = await page.evaluate(() => ({
       access: localStorage.getItem("socview_access_token"),
       refresh: localStorage.getItem("socview_refresh_token"),
     }));
+    if (legacyTokens.access || legacyTokens.refresh) {
+      throw new Error("Token legacy presenti in localStorage.");
+    }
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Configura" }).waitFor();
+    if (page.url().includes("/login")) {
+      throw new Error("Redirect a login inatteso con cookie auth valido");
+    }
+  });
+
+  await step("Cookie auth rimossi -> redirect login", async () => {
+    await context.clearCookies();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/login/, { timeout: 15000 });
+    const tokensLeft = await page
+      .evaluate(() => ({
+        access: localStorage.getItem("socview_access_token"),
+        refresh: localStorage.getItem("socview_refresh_token"),
+      }))
+      .catch(() => ({ access: null, refresh: null }));
     if (tokensLeft.access || tokensLeft.refresh) {
       throw new Error("Token non rimossi dopo logout forzato");
     }

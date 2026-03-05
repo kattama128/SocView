@@ -10,7 +10,7 @@ Piattaforma SOC multi-tenant demo end-to-end.
 - Async: Celery + Redis
 - Frontend: React + TypeScript + Material UI (IT)
 - Reverse proxy: Nginx
-- Ricerca: Elastic opzionale (`--profile elastic`) con fallback Postgres
+- Ricerca: backend Postgres (opzioni avanzate in documentazione ops)
 
 ## Struttura repo
 
@@ -27,11 +27,12 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Abilitare Elastic:
+Routing tenant:
 
-```bash
-docker compose --profile elastic up -d --build
-```
+- Default: `TENANT_ROUTING_MODE=subdomain`
+- Alternativa dev path-based:
+  - backend `.env`: `TENANT_ROUTING_MODE=path`
+  - frontend env: `VITE_TENANT_ROUTING_MODE=path`
 
 ## URL principali
 
@@ -79,6 +80,8 @@ Il seed crea/aggiorna:
 - saved searches demo
 
 ## Credenziali demo
+
+> ⚠️ **Le credenziali demo NON devono essere usate in produzione.**
 
 - SuperAdmin: `admin` / `Admin123!`
 - SOC Manager: `manager` / `Manager123!`
@@ -164,103 +167,22 @@ docker compose up -d --build
 Export CSV demo (lista filtrata + colonne configurabili):
 
 ```bash
-TOKEN=$(curl -s -H "Host: tenant1.localhost" -H "Content-Type: application/json" \
+curl -s -c cookies.txt -H "Host: tenant1.localhost" -H "Content-Type: application/json" \
   -d '{"username":"manager","password":"Manager123!"}' \
-  http://localhost/api/auth/token/ | python3 -c 'import json,sys; print(json.load(sys.stdin)["access"])')
+  http://localhost/api/auth/token/ > /dev/null
 
-curl -s -H "Host: tenant1.localhost" \
-  -H "Authorization: Bearer $TOKEN" \
+curl -s -b cookies.txt -H "Host: tenant1.localhost" \
   -H "Content-Type: application/json" \
   -d '{"text":"vpn","columns":["id","title","severity","source_name","dyn:event.id"],"all_results":true}' \
   http://localhost/api/alerts/alerts/export-configurable/ \
   -o alerts-export.csv
 ```
 
-## Hardening (M5)
+## Documentazione Operativa
 
-### TLS Nginx
-
-- Certificato dev self-signed incluso:
-  - `nginx/certs/dev.crt`
-  - `nginx/certs/dev.key`
-- Nginx espone:
-  - `80` (HTTP)
-  - `443` (HTTPS)
-
-Per certificati reali (production-ish):
-
-1. Sostituire `nginx/certs/dev.crt` e `nginx/certs/dev.key` con i certificati reali.
-2. Aggiornare `nginx/nginx.conf` se necessario (catena/intermediate).
-3. Abilitare in `.env`:
-   - `SECURE_SSL_REDIRECT=true`
-   - `SESSION_COOKIE_SECURE=true`
-   - `CSRF_COOKIE_SECURE=true`
-   - `SECURE_HSTS_SECONDS=31536000`
-
-### Rate limiting
-
-- DRF throttling configurabile da `.env`:
-  - `DRF_THROTTLE_AUTH` (auth)
-  - `DRF_THROTTLE_WEBHOOK` (webhook)
-  - `DRF_THROTTLE_ANON`
-- Nginx ha `limit_req` su:
-  - `/api/auth/token/`, `/api/auth/token/refresh/`
-  - `/api/ingestion/webhook/*`
-
-### CORS e security headers
-
-Config da `.env`:
-
-- `CORS_ALLOW_ALL_ORIGINS`
-- `CORS_ALLOWED_ORIGINS`
-- `CSRF_TRUSTED_ORIGINS`
-- `SECURE_REFERRER_POLICY`
-- `X_FRAME_OPTIONS`
-
-Header di sicurezza base applicati in Nginx (`nosniff`, `x-frame-options`, `referrer-policy`, `xss-protection`).  
-Nota dev: HSTS non e forzato per evitare blocchi dei subdomini tenant con cert self-signed.
-
-### Upload allegati sicuro
-
-- Limite upload allegati: `MAX_ATTACHMENT_SIZE_MB`
-- Validazioni upload:
-  - MIME type consentiti/bloccati (`ATTACHMENT_ALLOWED_MIME_TYPES`, `ATTACHMENT_BLOCKED_MIME_TYPES`)
-  - estensioni consentite/bloccate (`ATTACHMENT_ALLOWED_EXTENSIONS`, `ATTACHMENT_BLOCKED_EXTENSIONS`)
-  - blocco pattern contenuto rischioso e signature EICAR test
-- Scanning:
-  - backend reale AV via ClamAV adapter (`ATTACHMENT_SCAN_BACKEND=clamav`, `CLAMAV_*`)
-  - placeholder consentito solo in dev con feature flag (`ENABLE_DEV_ATTACHMENT_SCANNER=true`)
-  - comportamento su scanner non disponibile configurabile (`BLOCK_UNSCANNED_ATTACHMENTS`)
-- Download allegati solo via endpoint autenticato/autorizzato:
-  - `GET /api/alerts/attachments/{id}/download/`
-- Hardening Nginx:
-  - accesso diretto `/media/attachments/*` negato (403)
-- Audit upload/download:
-  - audit operativo `AuditLog` + security audit `SecurityAuditEvent`
-
-### Audit retention
-
-- Policy configurabile: `AUDIT_RETENTION_DAYS`
-- Job periodico Celery Beat: `cleanup_audit_logs_task`
-
-### Logging strutturato
-
-- Logging JSON lato backend (`core.logging_utils.JsonLogFormatter`)
-- Livello log configurabile: `LOG_LEVEL`
-
-## Backup Postgres (production-ish)
-
-Dump:
-
-```bash
-docker compose exec postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > backup_socview.sql
-```
-
-Restore:
-
-```bash
-cat backup_socview.sql | docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"'
-```
+- Hardening: [`docs/hardening.md`](docs/hardening.md)
+- Operazioni e backup Postgres: [`docs/ops.md`](docs/ops.md)
+- Changelog: [`docs/changelog.md`](docs/changelog.md)
 
 ## Endpoint principali
 
@@ -273,8 +195,11 @@ Sistema:
 
 Auth/Core:
 
+- `GET /api/auth/csrf/`
 - `POST /api/auth/token/`
 - `POST /api/auth/token/refresh/`
+- `POST /api/auth/token/migrate/`
+- `POST /api/auth/logout/`
 - `GET /api/auth/me/`
 - `GET /api/auth/users/`
 - `GET /api/auth/users/assignable/`

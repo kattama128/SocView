@@ -11,9 +11,18 @@ from tenant_data.views import (
     AuditLogViewSet,
     CustomerViewSet,
     NotificationViewSet,
+    NotificationPreferencesView,
+    PushSubscriptionView,
     SavedSearchViewSet,
+    SLAConfigView,
     SourceFieldSchemaView,
     TagViewSet,
+)
+from tenant_data.views_analytics import (
+    AnalyticsByCustomerView,
+    AnalyticsBySourceView,
+    AnalyticsHeatmapView,
+    AnalyticsOverviewView,
 )
 
 router = DefaultRouter()
@@ -30,4 +39,11 @@ urlpatterns = router.urls + [
     path("search/", AlertSearchView.as_view(), name="alert-search"),
     path("field-schemas/", SourceFieldSchemaView.as_view(), name="source-field-schema"),
     path("attachments/<int:pk>/download/", AttachmentDownloadView.as_view(), name="attachment-download"),
+    path("sla-config/", SLAConfigView.as_view(), name="sla-config"),
+    path("notification-preferences/", NotificationPreferencesView.as_view(), name="notification-preferences"),
+    path("push-subscriptions/", PushSubscriptionView.as_view(), name="push-subscriptions"),
+    path("analytics/overview/", AnalyticsOverviewView.as_view(), name="analytics-overview"),
+    path("analytics/by-source/", AnalyticsBySourceView.as_view(), name="analytics-by-source"),
+    path("analytics/by-customer/", AnalyticsByCustomerView.as_view(), name="analytics-by-customer"),
+    path("analytics/heatmap/", AnalyticsHeatmapView.as_view(), name="analytics-heatmap"),
 ]

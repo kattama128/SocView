@@ -37,13 +37,19 @@ class UserMembershipWriteSerializer(serializers.Serializer):
 
 class UserSerializer(serializers.ModelSerializer):
     permissions = serializers.SerializerMethodField()
+    is_public_schema = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "username", "email", "first_name", "last_name", "role", "permissions")
+        fields = ("id", "username", "email", "first_name", "last_name", "role", "permissions", "is_public_schema")
 
     def get_permissions(self, obj):
         return permissions_map_for_user(obj)
+
+    def get_is_public_schema(self, obj):
+        request = self.context.get("request")
+        tenant = getattr(request, "tenant", None) if request else None
+        return getattr(tenant, "schema_name", "public") == "public"
 
 
 class UserDetailSerializer(serializers.ModelSerializer):
@@ -51,6 +57,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
     date_joined = serializers.DateTimeField(read_only=True)
     permissions = serializers.SerializerMethodField()
     memberships = serializers.SerializerMethodField()
+    is_public_schema = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -66,6 +73,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
             "last_login",
             "date_joined",
             "memberships",
+            "is_public_schema",
         )
 
     def get_permissions(self, obj):
@@ -74,6 +82,11 @@ class UserDetailSerializer(serializers.ModelSerializer):
     def get_memberships(self, obj):
         queryset = obj.customer_memberships.select_related("customer").order_by("customer__name", "customer_id")
         return UserMembershipSerializer(queryset, many=True).data
+
+    def get_is_public_schema(self, obj):
+        request = self.context.get("request")
+        tenant = getattr(request, "tenant", None) if request else None
+        return getattr(tenant, "schema_name", "public") == "public"
 
 
 class UserWriteSerializer(serializers.ModelSerializer):

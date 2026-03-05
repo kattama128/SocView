@@ -44,3 +44,69 @@ export type ParserPreviewResponse = {
   detail?: string;
   errors?: string[];
 };
+
+export type ParserRevisionListItem = {
+  revision_id: number;
+  version: number;
+  created_at: string;
+  created_by: { id: number; username: string } | null;
+  config_snapshot: Record<string, unknown>;
+};
+
+export type ParserRevisionDiffResponse = {
+  left: {
+    revision_id: number;
+    version: number;
+    config_text: string;
+    config_snapshot: Record<string, unknown>;
+  };
+  right: {
+    revision_id: number;
+    version: number;
+    config_text: string;
+    config_snapshot: Record<string, unknown>;
+  };
+  diff: Array<{
+    path: string;
+    type: "add" | "remove" | "change";
+    old: unknown;
+    new: unknown;
+  }>;
+};
+
+export type ParserTestCase = {
+  id: number;
+  parser: number;
+  name: string;
+  input_raw: string;
+  expected_output: Record<string, unknown>;
+  created_by: number | null;
+  created_by_username: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ParserTestCaseCreatePayload = {
+  name: string;
+  input_raw: string;
+  expected_output: Record<string, unknown>;
+};
+
+export type ParserRunAllResult = {
+  tc_id: number;
+  name: string;
+  passed: boolean;
+  actual_output: Record<string, unknown>;
+  diff: Array<{
+    path: string;
+    type: "add" | "remove" | "change";
+    old: unknown;
+    new: unknown;
+  }>;
+};
+
+export type ParserRunAllResponse = {
+  results: ParserRunAllResult[];
+  passed: number;
+  failed: number;
+};

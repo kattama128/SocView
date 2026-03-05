@@ -104,6 +104,8 @@ class SourceSerializer(serializers.ModelSerializer):
             "type",
             "is_enabled",
             "severity_map",
+            "schedule_cron",
+            "schedule_interval_minutes",
             "config",
             "dedup_policy",
             "alert_type_rules",
@@ -139,6 +141,11 @@ class SourceSerializer(serializers.ModelSerializer):
         source_type = attrs.get("type", getattr(self.instance, "type", None))
         source_name = attrs.get("name", getattr(self.instance, "name", None))
         config_data = attrs.get("config")
+        schedule_cron = attrs.get("schedule_cron", getattr(self.instance, "schedule_cron", None))
+        schedule_interval_minutes = attrs.get(
+            "schedule_interval_minutes",
+            getattr(self.instance, "schedule_interval_minutes", None),
+        )
 
         if source_type:
             capability = source_type_capability(source_type)
@@ -183,18 +190,47 @@ class SourceSerializer(serializers.ModelSerializer):
 
             if source_type:
                 self._validate_config_for_type(source_type, merged_config_json)
+
+        if schedule_cron and schedule_interval_minutes:
+            raise serializers.ValidationError(
+                {"schedule_cron": "Impostare cron oppure intervallo minuti, non entrambi."}
+            )
+
+        if schedule_cron:
+            parts = [item for item in str(schedule_cron).strip().split(" ") if item]
+            if len(parts) != 5:
+                raise serializers.ValidationError(
+                    {"schedule_cron": "Cron expression non valida: usare 5 campi (m h dom mon dow)."}
+                )
+
+        if source_type not in {Source.Type.IMAP, Source.Type.REST} and (schedule_cron or schedule_interval_minutes):
+            raise serializers.ValidationError(
+                {"schedule_interval_minutes": "Scheduling automatico disponibile solo per fonti IMAP/REST."}
+            )
         return attrs
 
     def create(self, validated_data):
         config_data = validated_data.pop("config", {})
         dedup_data = validated_data.pop("dedup_policy", {})
         alert_type_rules_data = validated_data.pop("alert_type_rules", [])
+        poll_interval_seconds = int(config_data.get("poll_interval_seconds", 300) or 300)
+
+        source_type = validated_data.get("type")
+        schedule_cron = validated_data.get("schedule_cron")
+        schedule_interval_minutes = validated_data.get("schedule_interval_minutes")
+        if (
+            source_type in {Source.Type.IMAP, Source.Type.REST}
+            and not schedule_cron
+            and schedule_interval_minutes is None
+        ):
+            validated_data["schedule_interval_minutes"] = max(1, (poll_interval_seconds + 59) // 60)
+
         source = Source.objects.create(**validated_data)
 
         config_defaults = {
             "source": source,
             "config_json": config_data.get("config_json", {}),
-            "poll_interval_seconds": config_data.get("poll_interval_seconds", 300),
+            "poll_interval_seconds": poll_interval_seconds,
             "secrets_ref": config_data.get("secrets_ref", ""),
             "rate_limit_per_minute": config_data.get("rate_limit_per_minute", 60),
         }
@@ -352,6 +388,7 @@ class IngestionRunSerializer(serializers.ModelSerializer):
             "created_count",
             "updated_count",
             "error_count",
+            "error_message",
             "error_detail",
             "metadata",
             "events",
@@ -359,3 +396,25 @@ class IngestionRunSerializer(serializers.ModelSerializer):
 
     def get_customer_name(self, obj):
         return getattr(obj.customer, "name", None)
+
+
+class SourceStatsSerializer(serializers.Serializer):
+    last_run_at = serializers.DateTimeField(allow_null=True)
+    last_run_status = serializers.ChoiceField(
+        choices=(IngestionRun.Status.SUCCESS, IngestionRun.Status.ERROR, IngestionRun.Status.PARTIAL),
+        allow_null=True,
+    )
+    runs_today = serializers.IntegerField()
+    records_today = serializers.IntegerField()
+    error_rate_7d = serializers.FloatField()
+    avg_duration_seconds = serializers.FloatField(allow_null=True)
+
+
+class SourceErrorLogSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    status = serializers.CharField()
+    started_at = serializers.DateTimeField()
+    finished_at = serializers.DateTimeField(allow_null=True)
+    duration_seconds = serializers.FloatField(allow_null=True)
+    error_message = serializers.CharField()
+    error_detail = serializers.JSONField(allow_null=True)

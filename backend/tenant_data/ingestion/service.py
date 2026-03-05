@@ -295,6 +295,8 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
         run.error_count = summary.errors
         run.finished_at = timezone.now()
         run.status = IngestionRun.Status.SUCCESS if summary.errors == 0 else IngestionRun.Status.PARTIAL
+        run.error_message = ""
+        run.error_detail = None
         run.save(
             update_fields=[
                 "processed_count",
@@ -303,6 +305,8 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
                 "error_count",
                 "finished_at",
                 "status",
+                "error_message",
+                "error_detail",
             ]
         )
 
@@ -327,16 +331,26 @@ def run_ingestion_for_source(source, trigger=IngestionRun.Trigger.SCHEDULED, pus
             ]
         )
     except Exception as exc:
+        error_message = str(exc)
         run.finished_at = timezone.now()
         run.status = IngestionRun.Status.ERROR
-        run.error_detail = str(exc)
+        run.error_message = error_message
+        run.error_detail = {
+            "message": error_message,
+            "exception_type": exc.__class__.__name__,
+        }
         run.error_count = max(run.error_count, 1)
-        run.save(update_fields=["finished_at", "status", "error_detail", "error_count"])
+        run.save(update_fields=["finished_at", "status", "error_message", "error_detail", "error_count"])
 
         source_config.last_polled_at = timezone.now()
-        source_config.last_error = str(exc)
+        source_config.last_error = error_message
         source_config.status = source_config.Status.ERROR
-        source_config.health_details = {"error": str(exc)}
+        source_config.health_details = {
+            "error": {
+                "message": error_message,
+                "exception_type": exc.__class__.__name__,
+            }
+        }
         source_config.save(
             update_fields=[
                 "last_polled_at",

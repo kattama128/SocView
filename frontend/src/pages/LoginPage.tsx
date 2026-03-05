@@ -13,7 +13,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? "/";
+  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? "/home";
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -47,18 +47,22 @@ export default function LoginPage() {
             {error ? <Alert severity="error">{error}</Alert> : null}
             <TextField
               label="Username"
+              name="username"
+              inputProps={{ "data-testid": "username-input" }}
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               required
             />
             <TextField
               label="Password"
+              name="password"
+              inputProps={{ "data-testid": "password-input" }}
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               required
             />
-            <Button type="submit" variant="contained" disabled={submitting}>
+            <Button type="submit" variant="contained" disabled={submitting} data-testid="login-button">
               {submitting ? "Accesso in corso..." : "Accedi"}
             </Button>
           </Stack>
