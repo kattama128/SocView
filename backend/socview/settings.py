@@ -272,10 +272,6 @@ CELERY_BEAT_SCHEDULE = {
         "task": "core.tasks.heartbeat",
         "schedule": 60.0,
     },
-    "ingestion-scheduler-every-30-seconds": {
-        "task": "tenant_data.tasks.run_ingestion_scheduler",
-        "schedule": 30.0,
-    },
     "audit-retention-daily": {
         "task": "tenant_data.tasks.cleanup_audit_logs_task",
         "schedule": 86400.0,

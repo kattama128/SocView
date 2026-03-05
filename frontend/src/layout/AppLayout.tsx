@@ -1,9 +1,11 @@
 import DashboardIcon from "@mui/icons-material/Dashboard";
+import DataObjectIcon from "@mui/icons-material/DataObject";
 import DescriptionIcon from "@mui/icons-material/Description";
 import DomainIcon from "@mui/icons-material/Domain";
 import GroupsIcon from "@mui/icons-material/Groups";
 import InsertChartOutlinedIcon from "@mui/icons-material/InsertChartOutlined";
 import LogoutIcon from "@mui/icons-material/Logout";
+import ManageSearchIcon from "@mui/icons-material/ManageSearch";
 import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import SearchIcon from "@mui/icons-material/Search";
@@ -44,7 +46,7 @@ import StatusBar from "../components/StatusBar";
 import { useAuth } from "../context/AuthContext";
 import { useCustomer } from "../context/CustomerContext";
 import useNotificationsWS from "../hooks/useNotificationsWS";
-import { canAccessAdmin, canAccessAnalytics } from "../services/roleUtils";
+import { canAccessAdmin, canAccessAnalytics, canManageSources } from "../services/roleUtils";
 import { ackAllNotifications, ackNotification, fetchNotifications, snoozeNotification } from "../services/alertsApi";
 import { NotificationEvent } from "../types/alerts";
 
@@ -80,10 +82,13 @@ export default function AppLayout() {
   const items = useMemo<MenuItemLink[]>(() => {
     const analyticsEnabled = canAccessAnalytics(user?.role, user?.permissions);
     const adminEnabled = canAccessAdmin(user?.role, user?.permissions);
+    const sourcesEnabled = canManageSources(user?.role, user?.permissions);
     const menu: MenuItemLink[] = [
       { label: "Dashboard", icon: <DashboardIcon />, to: "/" },
       { label: "Active Alarms", icon: <DomainIcon />, to: "/active-alarms" },
+      { label: "Ricerca Alert", icon: <ManageSearchIcon />, to: "/search" },
       { label: "Sources", icon: <StorageIcon />, to: "/sources" },
+      { label: "Parsers", icon: <DataObjectIcon />, to: "/parsers", disabled: !sourcesEnabled },
       { label: "Customers", icon: <GroupsIcon />, to: "/customers" },
       { label: "Analytics", icon: <InsertChartOutlinedIcon />, to: "/analytics", disabled: !analyticsEnabled },
       { label: "Management", icon: <SettingsIcon />, to: "/configurazione" },

@@ -47,30 +47,6 @@ def ingest_source_task(schema_name, source_id, trigger=IngestionRun.Trigger.SCHE
         }
 
 
-@shared_task
-def run_ingestion_scheduler():
-    results = []
-
-    tenants = Client.objects.exclude(schema_name="public")
-    for tenant in tenants:
-        with schema_context(tenant.schema_name):
-            sources = Source.objects.select_related(
-                "config",
-                "parser_definition",
-                "parser_definition__active_revision",
-            ).filter(
-                is_enabled=True,
-                type__in=[Source.Type.IMAP, Source.Type.REST],
-            )
-            for source in sources:
-                if source.schedule_cron or source.schedule_interval_minutes is not None:
-                    continue
-
-                # Manual mode: no automatic scheduling when no cron/interval is configured.
-                continue
-
-    return {"scheduled": len(results), "items": results}
-
 
 @shared_task
 def sync_alert_index_task(schema_name, alert_id):
