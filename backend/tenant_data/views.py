@@ -222,6 +222,7 @@ class AlertStateViewSet(viewsets.ModelViewSet):
 class TagViewSet(viewsets.ModelViewSet):
     queryset = Tag.objects.all().order_by("name")
     serializer_class = TagSerializer
+    pagination_class = StandardPagination
     permission_classes = [TenantSchemaAccessPermission, RoleBasedWritePermission]
     read_capability = CAP_VIEW
     write_capability = CAP_TRIAGE
@@ -1551,6 +1552,7 @@ class SLAConfigView(APIView):
 
 class SavedSearchViewSet(viewsets.ModelViewSet):
     serializer_class = SavedSearchSerializer
+    pagination_class = StandardPagination
     permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
     def get_queryset(self):

@@ -147,8 +147,11 @@ export async function setAlertDetailFieldConfig(
 }
 
 export async function fetchSavedSearches(): Promise<SavedSearch[]> {
-  const response = await api.get<SavedSearch[]>("/alerts/saved-searches/");
-  return response.data;
+  const response = await api.get<SavedSearch[] | { results: SavedSearch[] }>("/alerts/saved-searches/");
+  if (Array.isArray(response.data)) {
+    return response.data;
+  }
+  return response.data.results ?? [];
 }
 
 export async function createSavedSearch(payload: Omit<SavedSearch, "id" | "created_at" | "updated_at">): Promise<SavedSearch> {
@@ -179,8 +182,11 @@ export async function fetchAlertStates(): Promise<AlertState[]> {
 }
 
 export async function fetchTags(): Promise<Tag[]> {
-  const response = await api.get<Tag[]>("/alerts/tags/");
-  return response.data;
+  const response = await api.get<Tag[] | { results: Tag[] }>("/alerts/tags/");
+  if (Array.isArray(response.data)) {
+    return response.data;
+  }
+  return response.data.results ?? [];
 }
 
 export async function fetchUsers(): Promise<UserSummary[]> {
