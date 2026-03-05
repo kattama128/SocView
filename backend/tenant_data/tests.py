@@ -752,6 +752,7 @@ class CustomerSettingsApiTests(BaseTenantTestCase):
         )
         self.client.force_authenticate(user=self.manager)
         self.customer = Customer.objects.create(name="Customer Settings A", code="csa")
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer, scope=CustomerMembership.Scope.MANAGER, is_active=True)
         self.global_source_a = Source.objects.create(
             name="Global EDR Feed",
             type=Source.Type.REST,
@@ -1008,6 +1009,8 @@ class SearchApiTests(BaseTenantTestCase):
         self.state_investigating = AlertState.objects.create(name="Investigating", order=1, is_final=False, is_enabled=True)
         self.customer_primary = Customer.objects.create(name="Customer Alpha", code="alpha")
         self.customer_secondary = Customer.objects.create(name="Customer Beta", code="beta")
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer_primary, scope=CustomerMembership.Scope.MANAGER, is_active=True)
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer_secondary, scope=CustomerMembership.Scope.MANAGER, is_active=True)
         self.tag_incident = Tag.objects.create(name="incident", scope=Tag.Scope.ALERT)
         self.tag_noise = Tag.objects.create(name="noise", scope=Tag.Scope.ALERT)
         now = timezone.now()
@@ -1433,6 +1436,8 @@ class SmokeApiTests(BaseTenantTestCase):
         )
         self.client.force_authenticate(user=self.manager)
         self.state = AlertState.objects.create(name="Nuovo", order=0, is_final=False, is_enabled=True)
+        self.customer = Customer.objects.create(name="Smoke Customer", code="smoke")
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer, scope=CustomerMembership.Scope.MANAGER, is_active=True)
         self.alert = Alert.objects.create(
             title="Alert smoke critico",
             severity="critical",
@@ -1443,6 +1448,7 @@ class SmokeApiTests(BaseTenantTestCase):
             parsed_payload={"event": {"id": "smoke-1"}},
             parsed_field_schema=[{"field": "event.id", "type": "keyword"}],
             current_state=self.state,
+            customer=self.customer,
             dedup_fingerprint="smoke-fingerprint-1",
         )
 
@@ -1730,6 +1736,8 @@ class AlertSummaryApiTests(BaseTenantTestCase):
 
         self.open_state = AlertState.objects.create(name="Nuovo summary", order=0, is_final=False, is_enabled=True)
         self.closed_state = AlertState.objects.create(name="Risolto summary", order=1, is_final=True, is_enabled=True)
+        self.customer = Customer.objects.create(name="Summary Customer", code="SUM")
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer, scope=CustomerMembership.Scope.MANAGER, is_active=True)
 
         now = timezone.now()
         self.open_today = Alert.objects.create(
@@ -1739,6 +1747,7 @@ class AlertSummaryApiTests(BaseTenantTestCase):
             source_name="summary-source",
             source_id="summary-open-today",
             current_state=self.open_state,
+            customer=self.customer,
             dedup_fingerprint="summary-open-today",
         )
         self.open_yesterday = Alert.objects.create(
@@ -1748,6 +1757,7 @@ class AlertSummaryApiTests(BaseTenantTestCase):
             source_name="summary-source",
             source_id="summary-open-yesterday",
             current_state=self.open_state,
+            customer=self.customer,
             dedup_fingerprint="summary-open-yesterday",
         )
         Alert.objects.filter(pk=self.open_yesterday.pk).update(created_at=now - timedelta(days=1, hours=2))
@@ -1759,6 +1769,7 @@ class AlertSummaryApiTests(BaseTenantTestCase):
             source_name="summary-source",
             source_id="summary-closed",
             current_state=self.closed_state,
+            customer=self.customer,
             dedup_fingerprint="summary-closed",
         )
         Alert.objects.filter(pk=self.closed_alert.pk).update(
@@ -2495,6 +2506,7 @@ class AnalyticsApiTests(BaseTenantTestCase):
         self.open_state = AlertState.objects.create(name="Open analytics", order=0, is_final=False, is_enabled=True)
         self.closed_state = AlertState.objects.create(name="Closed analytics", order=1, is_final=True, is_enabled=True)
         self.customer = Customer.objects.create(name="Analytics Customer", code="AN")
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer, scope=CustomerMembership.Scope.MANAGER, is_active=True)
         self.source = Source.objects.create(
             name="Analytics Source",
             type=Source.Type.REST,
@@ -2578,6 +2590,7 @@ class CustomerMembershipApiTests(BaseTenantTestCase):
         )
         self.client.force_authenticate(user=self.manager)
         self.customer = Customer.objects.create(name="Membership Customer", code="MEM")
+        CustomerMembership.objects.create(user=self.manager, customer=self.customer, scope=CustomerMembership.Scope.MANAGER, is_active=True)
 
     def test_customer_membership_crud_endpoint(self):
         upsert_response = self.client.post(
@@ -2587,14 +2600,15 @@ class CustomerMembershipApiTests(BaseTenantTestCase):
             HTTP_HOST="test.localhost",
         )
         self.assertEqual(upsert_response.status_code, 200)
-        self.assertEqual(len(upsert_response.data), 1)
+        self.assertEqual(len(upsert_response.data), 2)  # manager + analyst
 
         list_response = self.client.get(
             f"/api/alerts/customers/{self.customer.id}/memberships/",
             HTTP_HOST="test.localhost",
         )
         self.assertEqual(list_response.status_code, 200)
-        self.assertEqual(list_response.data[0]["user_id"], self.user.id)
+        analyst_memberships = [m for m in list_response.data if m["user_id"] == self.user.id]
+        self.assertEqual(len(analyst_memberships), 1)
 
         delete_response = self.client.delete(
             f"/api/alerts/customers/{self.customer.id}/memberships/",
@@ -2603,4 +2617,4 @@ class CustomerMembershipApiTests(BaseTenantTestCase):
             HTTP_HOST="test.localhost",
         )
         self.assertEqual(delete_response.status_code, 200)
-        self.assertEqual(delete_response.data, [])
+        self.assertEqual(len(delete_response.data), 1)  # manager membership remains

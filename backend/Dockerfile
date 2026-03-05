@@ -15,7 +15,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 RUN useradd -r -s /bin/false -d /app appuser
 
 COPY . /app
-RUN chmod +x /app/entrypoint.sh \
+RUN mkdir -p /app/media \
+    && chmod +x /app/entrypoint.sh \
     && chown -R appuser:appuser /app
 
 USER appuser
