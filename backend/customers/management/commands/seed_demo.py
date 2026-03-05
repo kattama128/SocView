@@ -24,6 +24,14 @@ DEFAULT_TAGS = [
     {"name": "critical", "scope": "alert", "color": "#7b1fa2", "metadata": {}},
 ]
 
+DEMO_CUSTOMERS = [
+    {"name": "Alpina Manufacturing S.p.A.", "code_suffix": "alpina"},
+    {"name": "Bellini Logistics S.r.l.", "code_suffix": "bellini"},
+    {"name": "NordCom Telecom Italia S.p.A.", "code_suffix": "nordcom"},
+    {"name": "Riviera Retail Group S.r.l.", "code_suffix": "riviera"},
+    {"name": "MedNova Healthcare Services S.p.A.", "code_suffix": "mednova"},
+]
+
 DEFAULT_ALERTS = [
     {
         "title": "Tentativi login anomali su VPN",
@@ -447,10 +455,20 @@ class Command(BaseCommand):
         )
         from tenant_data.ingestion.parser import validate_parser_config
 
-        default_customer, _ = Customer.objects.update_or_create(
-            code=schema_name,
-            defaults={"name": schema_name.upper(), "is_enabled": True, "metadata": {"seeded": True}},
-        )
+        seeded_customers = []
+        for idx, customer_payload in enumerate(DEMO_CUSTOMERS, start=1):
+            customer_code = f"{schema_name}-{customer_payload['code_suffix']}"
+            customer, _ = Customer.objects.update_or_create(
+                code=customer_code,
+                defaults={
+                    "name": customer_payload["name"],
+                    "is_enabled": True,
+                    "metadata": {"seeded": True, "seed_index": idx, "schema": schema_name},
+                },
+            )
+            seeded_customers.append(customer)
+
+        default_customer = seeded_customers[0]
 
         states_by_name = {}
         for state_payload in DEFAULT_STATES:
@@ -478,17 +496,18 @@ class Command(BaseCommand):
 
         now = timezone.now()
         for index, alert_payload in enumerate(DEFAULT_ALERTS, start=1):
-            fingerprint = f"{schema_name}-demo-{index}"
+            customer = seeded_customers[(index - 1) % len(seeded_customers)]
+            fingerprint = f"{schema_name}-{customer.code}-demo-{index}"
             alert, _ = Alert.objects.update_or_create(
-                customer=default_customer,
+                customer=customer,
                 dedup_fingerprint=fingerprint,
                 defaults={
-                    "customer": default_customer,
+                    "customer": customer,
                     "title": alert_payload["title"],
                     "severity": alert_payload["severity"],
                     "event_timestamp": now - timedelta(hours=index * 2),
                     "source_name": alert_payload["source_name"],
-                    "source_id": alert_payload["source_id"],
+                    "source_id": f"{alert_payload['source_id']}-{customer.code}",
                     "raw_payload": alert_payload["raw_payload"],
                     "parsed_payload": alert_payload["parsed_payload"],
                     "current_state": states_by_name[alert_payload["state"]],
@@ -740,4 +759,7 @@ class Command(BaseCommand):
                 if schema_name != "public":
                     self._seed_tenant_core_data(schema_name, users_map)
 
+        self.stdout.write(
+            self.style.WARNING("ATTENZIONE: Le credenziali demo NON devono essere usate in produzione.")
+        )
         self.stdout.write(self.style.SUCCESS("Seed demo completato"))
