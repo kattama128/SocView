@@ -12,10 +12,19 @@ import PlatformProfileCard from "../features/management/PlatformProfileCard";
 import RetentionComplianceCard from "../features/management/RetentionComplianceCard";
 import RolesPermissionsCard from "../features/management/RolesPermissionsCard";
 import SecurityAccessCard from "../features/management/SecurityAccessCard";
+import SlaConfigCard from "../features/management/SlaConfigCard";
 import UserDialog from "../features/management/UserDialog";
 import UserManagementCard from "../features/management/UserManagementCard";
 import { defaultManagementSettings, ManagementSettings } from "../features/management/types";
-import { fetchCustomersOverview, fetchNotifications, searchAlerts } from "../services/alertsApi";
+import {
+  fetchCustomers,
+  fetchCustomersOverview,
+  fetchNotificationPreferences,
+  fetchNotifications,
+  fetchSlaConfig,
+  searchAlerts,
+  updateNotificationPreferences,
+} from "../services/alertsApi";
 import { fetchIngestionRuns, fetchSourceCapabilities, fetchSources } from "../services/ingestionApi";
 import {
   createUserAccount,
@@ -26,8 +35,10 @@ import {
   updateUserAccount,
 } from "../services/usersApi";
 import { surfaceCardSx } from "../styles/surfaces";
+import { NotificationPreferences, SlaConfig } from "../types/alerts";
 import { IngestionRun, Source, SourceCapabilitiesResponse } from "../types/ingestion";
-import { RoleDefinition, UserAccount, UserAccountPayload } from "../types/users";
+import { CustomerSummary } from "../types/alerts";
+import { RoleDefinition, UserAccount, UserAccountPayload, UserMembership } from "../types/users";
 
 type TabKey = "overview" | "platform" | "security" | "users" | "integrations";
 
@@ -104,6 +115,9 @@ export default function AdminConfigPage() {
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [roles, setRoles] = useState<RoleDefinition[]>([]);
   const [securityEvents, setSecurityEvents] = useState<SecurityAuditEvent[]>([]);
+  const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [slaConfigs, setSlaConfigs] = useState<SlaConfig[]>([]);
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences | null>(null);
 
   const [loadingData, setLoadingData] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
@@ -121,6 +135,7 @@ export default function AdminConfigPage() {
   const canManageSources = Boolean(user?.permissions?.manage_sources);
   const canManageUsers = Boolean(user?.permissions?.manage_users);
   const canManageSecurity = Boolean(user?.permissions?.admin || user?.permissions?.manage_users);
+  const canManageCustomers = Boolean(user?.permissions?.manage_customers);
 
   const tabs = useMemo(
     () =>
@@ -168,6 +183,9 @@ export default function AdminConfigPage() {
         setSources([]);
         setCapabilities(null);
         setIngestionRuns([]);
+        setCustomers([]);
+        setSlaConfigs([]);
+        setNotifPrefs(null);
         setLoadError(null);
         return;
       }
@@ -186,6 +204,9 @@ export default function AdminConfigPage() {
         sourcesRes,
         capabilitiesRes,
         runsRes,
+        customersRes,
+        slaRes,
+        notifPrefsRes,
       ] = await Promise.allSettled([
         fetchCustomersOverview("name"),
         searchAlerts({ page: 1, page_size: 1, is_active: true, ordering: "-event_timestamp" }),
@@ -197,6 +218,9 @@ export default function AdminConfigPage() {
         canManageSources ? fetchSources() : Promise.resolve([] as Source[]),
         canManageSources ? fetchSourceCapabilities() : Promise.resolve(null as SourceCapabilitiesResponse | null),
         canManageSources ? fetchIngestionRuns() : Promise.resolve([] as IngestionRun[]),
+        canManageUsers ? fetchCustomers() : Promise.resolve([] as CustomerSummary[]),
+        canManageCustomers ? fetchSlaConfig() : Promise.resolve([] as SlaConfig[]),
+        canView ? fetchNotificationPreferences() : Promise.resolve(null as NotificationPreferences | null),
       ]);
 
       if (cancelled) {
@@ -255,6 +279,10 @@ export default function AdminConfigPage() {
         issues.push("ingestion runs");
       }
 
+      const customersPayload = customersRes.status === "fulfilled" ? customersRes.value : [];
+      const slaPayload = slaRes.status === "fulfilled" ? slaRes.value : [];
+      const notifPrefsPayload = notifPrefsRes.status === "fulfilled" ? notifPrefsRes.value : null;
+
       const criticalActive = customersOverview.reduce((acc, item) => acc + item.active_alerts_critical, 0);
       const highActive = customersOverview.reduce((acc, item) => acc + item.active_alerts_high, 0);
 
@@ -274,6 +302,9 @@ export default function AdminConfigPage() {
       setSources(sourcesPayload);
       setCapabilities(capabilitiesPayload);
       setIngestionRuns([...runsPayload].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()));
+      setCustomers(customersPayload);
+      setSlaConfigs(slaPayload);
+      setNotifPrefs(notifPrefsPayload);
 
       setLoadError(issues.length ? `Alcune sezioni non sono complete: ${issues.join(", ")}.` : null);
       setLoadingData(false);
@@ -283,7 +314,7 @@ export default function AdminConfigPage() {
     return () => {
       cancelled = true;
     };
-  }, [canManageSecurity, canManageSources, canManageUsers, canView, user]);
+  }, [canManageCustomers, canManageSecurity, canManageSources, canManageUsers, canView, user]);
 
   const filteredUsers = useMemo(() => {
     const term = userSearch.trim().toLowerCase();
@@ -361,6 +392,14 @@ export default function AdminConfigPage() {
     }
   };
 
+  const handleMembershipsChanged = (userId: number, memberships: UserMembership[]) => {
+    setUsers((current) =>
+      current.map((u) => (u.id === userId ? { ...u, memberships } : u)),
+    );
+    // Also update editingUser if the dialog is still open for that user
+    setEditingUser((eu) => (eu && eu.id === userId ? { ...eu, memberships } : eu));
+  };
+
   const toggleUserStatus = async (account: UserAccount) => {
     if (!canManageUsers) {
       return;
@@ -376,6 +415,23 @@ export default function AdminConfigPage() {
 
   const updatePlatformSettings = (partial: Partial<ManagementSettings>) => {
     setPlatformSettings((current) => ({ ...current, ...partial }));
+  };
+
+  const handleSaveNotifPrefs = async (prefs: Partial<NotificationPreferences>) => {
+    const updated = await updateNotificationPreferences(prefs);
+    setNotifPrefs(updated);
+  };
+
+  const handleSlaUpdated = (updated: SlaConfig) => {
+    setSlaConfigs((current) => {
+      const idx = current.findIndex((s) => s.id === updated.id);
+      if (idx >= 0) {
+        const next = [...current];
+        next[idx] = updated;
+        return next;
+      }
+      return [...current, updated];
+    });
   };
 
   if (!canView) {
@@ -460,11 +516,25 @@ export default function AdminConfigPage() {
               <SecurityAccessCard settings={platformSettings} onChange={updatePlatformSettings} />
             </Grid>
             <Grid item xs={12} lg={6}>
-              <NotificationsIntegrationsCard settings={platformSettings} onChange={updatePlatformSettings} />
+              <NotificationsIntegrationsCard
+                settings={platformSettings}
+                onChange={updatePlatformSettings}
+                notifPrefs={notifPrefs}
+                onSaveNotifPrefs={handleSaveNotifPrefs}
+              />
             </Grid>
             <Grid item xs={12} lg={6}>
               <RetentionComplianceCard settings={platformSettings} onChange={updatePlatformSettings} />
             </Grid>
+            {canManageCustomers && (
+              <Grid item xs={12}>
+                <SlaConfigCard
+                  slaConfigs={slaConfigs}
+                  onUpdated={handleSlaUpdated}
+                  canManage={canManageCustomers}
+                />
+              </Grid>
+            )}
             <Grid item xs={12}>
               <ApiTokensCard
                 tokens={[
@@ -528,7 +598,13 @@ export default function AdminConfigPage() {
 
       <TabPanel value={tabIndex} index={tabs.findIndex((item) => item.key === "integrations")}>
         <Stack spacing={2}>
-          <IntegrationsOverviewCard sources={sources} />
+          <IntegrationsOverviewCard
+            sources={sources}
+            capabilities={capabilities}
+            customers={customers}
+            canManageSources={canManageSources}
+            onSourcesChanged={setSources}
+          />
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
               <Paper sx={{ ...surfaceCardSx, p: 2 }}>
@@ -569,9 +645,11 @@ export default function AdminConfigPage() {
         draftUser={draftUser}
         roleOptions={roles}
         canManageUsers={canManageUsers}
+        customers={customers}
         onChange={setDraftUser}
         onClose={closeDialog}
         onSave={saveUser}
+        onMembershipsChanged={handleMembershipsChanged}
       />
     </Stack>
   );

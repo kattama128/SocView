@@ -265,6 +265,15 @@ export async function fetchSlaConfig(): Promise<SlaConfig[]> {
   return response.data;
 }
 
+export async function saveSlaConfig(payload: {
+  severity: string;
+  response_minutes: number;
+  resolution_minutes: number;
+}): Promise<SlaConfig> {
+  const response = await api.post<SlaConfig>("/alerts/sla-config/", payload);
+  return response.data;
+}
+
 export async function exportAlertsConfigurable(
   payload: SearchRequest & { columns: string[]; all_results?: boolean },
 ): Promise<Blob> {
