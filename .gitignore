@@ -46,3 +46,7 @@ coverage/
 # Misc
 tmp/
 .cache/
+
+# Claude Code session data
+.claude/worktrees/
+.claude/projects/

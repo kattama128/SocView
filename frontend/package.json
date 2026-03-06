@@ -33,6 +33,9 @@
     "react-router-dom": "^6.30.1",
     "recharts": "^3.7.0"
   },
+  "overrides": {
+    "dompurify": ">=3.3.2"
+  },
   "devDependencies": {
     "@eslint/js": "^9.35.0",
     "@playwright/test": "^1.58.2",

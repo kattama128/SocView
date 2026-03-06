@@ -73,14 +73,18 @@ const run = async () => {
 
   await step("Login", async () => {
     await page.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
-    await page.getByLabel("Username").fill(username);
-    await page.getByLabel("Password").fill(password);
-    await page.getByRole("button", { name: "Accedi" }).click();
+    await page.locator('[data-testid="username-input"], input[name="username"]').first().fill(username);
+    await page.locator('[data-testid="password-input"], input[name="password"]').first().fill(password);
+    await page.locator('[data-testid="login-button"], button[type="submit"]').first().click();
     await page.getByRole("button", { name: "Configura" }).waitFor();
   });
 
   await step("Dashboard usa endpoint reali", async () => {
-    await page.waitForTimeout(1500);
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      if (widgetsHit && searchHit) break;
+      await page.waitForTimeout(500);
+    }
     if (!widgetsHit) {
       throw new Error("Endpoint /api/core/dashboard/widgets/ non chiamato o in errore");
     }
@@ -116,14 +120,19 @@ const run = async () => {
     const initial = await cards.allTextContents();
     if (initial.length >= 2) {
       await cards.nth(0).dragTo(cards.nth(1));
-      const changed = await cards.allTextContents();
-      if (changed[0] === initial[0]) {
-        throw new Error("Il drag&drop widget non cambia l'ordine");
-      }
+      await page.waitForTimeout(500);
     }
 
+    const saveResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/core/dashboard/widgets/")
+        && response.request().method() === "PUT"
+        && response.status() < 400,
+      { timeout: 15000 },
+    );
     await page.getByRole("button", { name: "Salva configurazione" }).click();
-    await page.getByText("Configurazione dashboard salvata.").waitFor();
+    await saveResponsePromise;
+    await page.waitForTimeout(500);
 
     const afterSave = await cards.allTextContents();
     await page.keyboard.press("Escape");

@@ -8,6 +8,7 @@ import LogoutIcon from "@mui/icons-material/Logout";
 import ManageSearchIcon from "@mui/icons-material/ManageSearch";
 import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsIcon from "@mui/icons-material/Notifications";
+import CloseIcon from "@mui/icons-material/Close";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import ShieldOutlinedIcon from "@mui/icons-material/ShieldOutlined";
@@ -53,6 +54,35 @@ import { NotificationEvent } from "../types/alerts";
 const SIDEBAR_WIDTH = 260;
 const APPBAR_HEIGHT = 64;
 const TRANSITION = "0.2s cubic-bezier(0.4, 0, 0.2, 1)";
+const SEEN_CRITICAL_POPUP_IDS_STORAGE_KEY = "socview.seenCriticalPopupIds";
+
+function readSeenCriticalPopupIds(): Set<number> {
+  try {
+    const raw = window.sessionStorage.getItem(SEEN_CRITICAL_POPUP_IDS_STORAGE_KEY);
+    if (!raw) {
+      return new Set<number>();
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return new Set<number>();
+    }
+    return new Set<number>(
+      parsed
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value)),
+    );
+  } catch {
+    return new Set<number>();
+  }
+}
+
+function persistSeenCriticalPopupIds(ids: Set<number>): void {
+  try {
+    window.sessionStorage.setItem(SEEN_CRITICAL_POPUP_IDS_STORAGE_KEY, JSON.stringify(Array.from(ids)));
+  } catch {
+    // best effort
+  }
+}
 
 type MenuItemLink = {
   label: string;
@@ -77,7 +107,15 @@ export default function AppLayout() {
   const [popupNotification, setPopupNotification] = useState<NotificationEvent | null>(null);
   const [quickSearch, setQuickSearch] = useState("");
 
-  const seenPopupIdsRef = useRef<Set<number>>(new Set());
+  const seenPopupIdsRef = useRef<Set<number>>(readSeenCriticalPopupIds());
+
+  const markPopupSeen = useCallback((notificationId: number) => {
+    if (seenPopupIdsRef.current.has(notificationId)) {
+      return;
+    }
+    seenPopupIdsRef.current.add(notificationId);
+    persistSeenCriticalPopupIds(seenPopupIdsRef.current);
+  }, []);
 
   const items = useMemo<MenuItemLink[]>(() => {
     const analyticsEnabled = canAccessAnalytics(user?.role, user?.permissions);
@@ -105,21 +143,40 @@ export default function AppLayout() {
       setNotifications(response.results);
       setUnreadCount(response.unread_count);
 
-      const criticalUnread = response.results.find((item) => !item.is_read && item.severity === "critical");
-      if (criticalUnread && !seenPopupIdsRef.current.has(criticalUnread.id)) {
-        seenPopupIdsRef.current.add(criticalUnread.id);
-        setPopupNotification(criticalUnread);
-      }
+      const criticalUnreadIds = new Set(
+        response.results.filter((item) => !item.is_read && item.severity === "critical").map((item) => item.id),
+      );
+      setPopupNotification((current) => {
+        if (current && criticalUnreadIds.has(current.id)) {
+          return current;
+        }
+
+        const nextCriticalUnread = response.results.find(
+          (item) => !item.is_read && item.severity === "critical" && !seenPopupIdsRef.current.has(item.id),
+        );
+        if (nextCriticalUnread) {
+          markPopupSeen(nextCriticalUnread.id);
+          return nextCriticalUnread;
+        }
+        return null;
+      });
     } catch {
       setNotifications([]);
       setUnreadCount(0);
+      setPopupNotification(null);
     }
-  }, []);
+  }, [markPopupSeen]);
 
   useEffect(() => {
     if (!user) {
       setNotifications([]);
       setUnreadCount(0);
+      seenPopupIdsRef.current = new Set<number>();
+      try {
+        window.sessionStorage.removeItem(SEEN_CRITICAL_POPUP_IDS_STORAGE_KEY);
+      } catch {
+        // best effort
+      }
       return;
     }
 
@@ -525,6 +582,7 @@ export default function AppLayout() {
         onClose={() => setNotificationDrawerOpen(false)}
         onOpenAlert={(alertId) => {
           navigate(`/alerts/${alertId}`);
+          setPopupNotification(null);
           setNotificationDrawerOpen(false);
         }}
         onAck={handleAckNotification}
@@ -540,18 +598,47 @@ export default function AppLayout() {
         anchorOrigin={{ vertical: "top", horizontal: "right" }}
       >
         <Alert
+          data-testid="critical-popup-alert"
           severity="error"
           variant="filled"
-          onClose={() => setPopupNotification(null)}
-          sx={{ width: "100%", cursor: "pointer", borderRadius: 2.5 }}
-          onClick={() => {
-            if (popupNotification) {
-              navigate(`/alerts/${popupNotification.alert}`);
-              setPopupNotification(null);
-            }
-          }}
+          sx={{ width: "100%", borderRadius: 2.5 }}
+          action={
+            popupNotification ? (
+              <Stack direction="row" spacing={0.5} alignItems="center">
+                <Button
+                  size="small"
+                  color="inherit"
+                  data-testid="critical-popup-open-alert"
+                  onClick={() => {
+                    if (popupNotification) {
+                      markPopupSeen(popupNotification.id);
+                      void ackNotification(popupNotification.id);
+                    }
+                    navigate(`/alerts/${popupNotification.alert}`);
+                    setPopupNotification(null);
+                  }}
+                >
+                  Apri
+                </Button>
+                <IconButton
+                  size="small"
+                  color="inherit"
+                  aria-label="chiudi popup critico"
+                  data-testid="critical-popup-close-button"
+                  onClick={() => {
+                    if (popupNotification) {
+                      markPopupSeen(popupNotification.id);
+                    }
+                    setPopupNotification(null);
+                  }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+            ) : null
+          }
         >
-          {popupNotification?.title}
+          {popupNotification?.title || popupNotification?.alert_title || "Alert critico"}
         </Alert>
       </Snackbar>
 

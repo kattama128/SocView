@@ -11,6 +11,7 @@ const run = async () => {
   let createdSource = false;
   let createdSourceId = null;
   let createdSourceName = null;
+  const runId = Date.now();
   let accessToken = null;
   let tenantHost = (() => {
     try {
@@ -72,7 +73,7 @@ const run = async () => {
     const { response: createResponse, data: createdPayload } = await apiRequest(
       "/ingestion/sources/create-from-preset/",
       "POST",
-      { preset_key: "canary_tools_rest" },
+      { preset_key: "canary_tools_rest", name: `QA Canary ${runId}` },
     );
     if (createResponse.status() >= 400) {
       throw new Error(`Create source via API fallita con status ${createResponse.status()}.`);
@@ -85,7 +86,7 @@ const run = async () => {
 
     await page.goto(`${baseUrl}/sources`, { waitUntil: "domcontentloaded" });
     await page.getByText(createdSourceName).first().click();
-    const descriptionField = page.getByLabel(/Descrizione/i);
+    const descriptionField = page.getByTestId("source-detail").getByLabel(/Descrizione/i);
     await descriptionField.waitFor({ timeout: 15000 });
     await descriptionField.fill(`E2E updated ${Date.now()}`);
 
@@ -163,16 +164,26 @@ const run = async () => {
       throw new Error(`Parser preview fallita con status ${response.status()}.`);
     }
     await page.getByText("Preview parser completata.").waitFor({ timeout: 15000 });
-    await page.getByText("Preview output").waitFor();
+    await page.getByTestId("preview-result").waitFor({ timeout: 15000 });
   });
 
   await step("Cleanup: delete source creata dal test", async () => {
     if (!createdSource || !createdSourceId) {
       return;
     }
-    const { response } = await apiRequest(`/ingestion/sources/${createdSourceId}/`, "DELETE");
-    if (response.status() >= 400) {
-      throw new Error(`Delete source via API fallita con status ${response.status()}.`);
+    const delays = [500, 1000, 2000];
+    let lastStatus = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { response } = await apiRequest(`/ingestion/sources/${createdSourceId}/`, "DELETE");
+      lastStatus = response.status();
+      if (lastStatus === 429 && attempt < 2) {
+        await page.waitForTimeout(delays[attempt]);
+        continue;
+      }
+      if (lastStatus >= 400) {
+        throw new Error(`Delete source via API fallita con status ${lastStatus}.`);
+      }
+      break;
     }
     await page.waitForTimeout(400);
   });

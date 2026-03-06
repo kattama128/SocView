@@ -81,7 +81,7 @@ class SourceViewSet(viewsets.ModelViewSet):
         status_filter = (self.request.query_params.get("status") or "").strip().lower()
         if customer_id is not None:
             queryset = queryset.filter(customer_id=customer_id)
-        elif scope != "all":
+        elif getattr(self, "action", None) == "list" and scope != "all":
             queryset = queryset.filter(customer__isnull=True)
         queryset = filter_queryset_by_customer_access(queryset, self.request.user, include_null=True)
         if status_filter == "active":
@@ -504,5 +504,4 @@ class WebhookIngestionView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
-
 

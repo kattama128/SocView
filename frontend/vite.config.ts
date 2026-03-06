@@ -6,6 +6,7 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 5173,
+    allowedHosts: true,
   },
   build: {
     chunkSizeWarningLimit: 500,
@@ -15,11 +16,17 @@ export default defineConfig({
           if (!id.includes("node_modules")) {
             return undefined;
           }
-          if (id.includes("@mui") || id.includes("@emotion")) {
-            return "vendor-ui";
+          if (id.includes("@mui/icons-material")) {
+            return "vendor-mui-icons";
+          }
+          if (id.includes("@mui")) {
+            return "vendor-mui";
+          }
+          if (id.includes("@emotion")) {
+            return "vendor-emotion";
           }
           if (id.includes("react") || id.includes("scheduler")) {
-            return "vendor-ui";
+            return "vendor-react";
           }
           if (id.includes("axios")) {
             return "vendor-axios";

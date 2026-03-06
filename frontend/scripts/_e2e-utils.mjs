@@ -62,9 +62,9 @@ export async function login(page, role = "admin") {
     throw new Error(`Credenziali mancanti per ruolo ${role}. Imposta le variabili QA_USERNAME*/QA_PASSWORD*.`);
   }
   await page.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Username").fill(creds.username);
-  await page.getByLabel("Password").fill(creds.password);
-  await page.getByRole("button", { name: "Accedi" }).click();
+  await page.locator('[data-testid="username-input"], input[name="username"]').first().fill(creds.username);
+  await page.locator('[data-testid="password-input"], input[name="password"]').first().fill(creds.password);
+  await page.locator('[data-testid="login-button"], button[type="submit"]').first().click();
 }
 
 export async function logout(page) {

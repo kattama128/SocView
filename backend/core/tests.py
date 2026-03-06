@@ -60,3 +60,24 @@ class CoreAdminEndpointsTests(TestCase):
         task_status_response = self.client.get("/api/core/tasks/task-123/status/", HTTP_HOST="localhost")
         self.assertEqual(task_status_response.status_code, 200)
         self.assertIn("status", task_status_response.data)
+
+    @patch("core.views.schema_context")
+    @patch("core.views.get_tenant_domain_model")
+    @patch("core.views.get_tenant_model")
+    def test_tenants_list_treats_null_paid_until_as_active(self, mocked_tenant_model, mocked_domain_model, mocked_schema_context):
+        tenant = Mock(
+            id=99,
+            schema_name="tenant_null",
+            name="Tenant Null",
+            on_trial=False,
+            paid_until=None,
+        )
+        mocked_tenant_model.return_value.objects.all.return_value.order_by.return_value = [tenant]
+        mocked_domain_model.return_value.objects.filter.return_value.only.return_value = []
+        mocked_schema_context.return_value.__enter__.return_value = None
+        mocked_schema_context.return_value.__exit__.return_value = False
+
+        response = self.client.get("/api/core/tenants/", HTTP_HOST="localhost")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["status"], "active")

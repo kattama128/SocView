@@ -30,7 +30,7 @@ const run = async () => {
     await step(`Management visibility (${testCase.role})`, async () => {
       await login(page, testCase.role);
       if (testCase.role === "analyst") {
-        await page.getByRole("button", { name: "notifications" }).waitFor();
+        await page.locator('[data-testid="notification-bell"], [aria-label="notifiche"], [aria-label="notifications"]').first().waitFor();
       } else {
         await page.getByRole("button", { name: "Configura" }).waitFor();
       }

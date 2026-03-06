@@ -49,8 +49,10 @@ test.describe('Autenticazione', () => {
 
   test('logout invalida la sessione', async ({ page }) => {
     await loginAsAdmin(page);
-    // Trova e clicca logout
-    await page.locator('[data-testid="logout-button"], [aria-label="logout"]').first().click();
+    // Il logout button potrebbe essere fuori viewport nel sidebar — scroll into view
+    const logoutBtn = page.locator('[data-testid="logout-button"]').first();
+    await logoutBtn.scrollIntoViewIfNeeded();
+    await logoutBtn.click();
     await expect(page).toHaveURL(/login/);
     // Prova ad accedere a pagina protetta
     await page.goto(`${BASE}/`);
@@ -308,13 +310,14 @@ test.describe('Notification Center', () => {
     }
   });
 
-  test('ack-all svuota il drawer', async ({ page }) => {
+  test('ack-all segna tutte le notifiche come lette', async ({ page }) => {
     await page.click('[data-testid="notification-bell"]');
     const ackAll = page.locator('[data-testid="notification-ack-all-button"]');
     if (await ackAll.isVisible()) {
       await ackAll.click();
       await page.waitForTimeout(1000);
-      await expect(page.locator('[data-testid="notification-item"]')).not.toBeVisible();
+      // Le notifiche restano visibili ma marcate come lette; il contatore unread diventa 0
+      await expect(page.locator('[data-testid="notification-list-tab"]')).toContainText('(0)');
     }
   });
 
@@ -406,45 +409,36 @@ test.describe('Parser', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsManager(page, TENANT1);
     await page.goto(`${TENANT1}/parsers`);
-    await expect(page.locator('[data-testid="parsers-list"], table').first()).toBeVisible({ timeout: 10000 });
+    // La pagina mostra un LinearProgress durante il caricamento, poi il titolo
+    await expect(page.locator('h5:has-text("Parser Pipeline")')).toBeVisible({ timeout: 10000 });
   });
 
-  test('lista parser caricata', async ({ page }) => {
-    expect(await page.locator('[data-testid="parser-item"], tbody tr').count()).toBeGreaterThan(0);
+  test('pagina parser caricata con selettore sorgente', async ({ page }) => {
+    await expect(page.getByLabel('Sorgente')).toBeVisible();
   });
 
-  test('editor Monaco presente nel detail parser', async ({ page }) => {
-    await page.locator('[data-testid="parser-item"], tbody tr').first().click();
-    // Monaco si carica lazy, aspetta
-    await expect(page.locator('.monaco-editor, [data-testid="parser-editor"]')).toBeVisible({ timeout: 15000 });
+  test('configurazione parser con TextField multiline', async ({ page }) => {
+    // La pagina usa un MUI TextField multiline per la config, non Monaco
+    await expect(page.getByLabel('Config parser (JSON/YAML)')).toBeVisible({ timeout: 10000 });
   });
 
   test('preview con evento personalizzato funziona', async ({ page }) => {
-    await page.locator('[data-testid="parser-item"], tbody tr').first().click();
-    const customEventInput = page.locator('[data-testid="custom-event-input"]');
-    if (await customEventInput.isVisible()) {
-      await customEventInput.fill('{"test": "evento", "src_ip": "1.2.3.4"}');
-      await page.locator('[data-testid="preview-button"]').first().click();
-      await expect(page.locator('[data-testid="preview-result"]')).toBeVisible({ timeout: 8000 });
-    }
+    const rawPayloadField = page.getByLabel('Raw payload preview (JSON)');
+    await expect(rawPayloadField).toBeVisible();
+    await rawPayloadField.fill('{"test": "evento", "src_ip": "1.2.3.4"}');
+    await page.locator('button:has-text("Valida e preview")').click();
+    // Attende feedback di successo o errore
+    await expect(page.locator('.MuiAlert-root')).toBeVisible({ timeout: 10000 });
   });
 
-  test('tab test cases visibile', async ({ page }) => {
-    await page.locator('[data-testid="parser-item"], tbody tr').first().click();
-    const testCasesTab = page.locator('[data-testid="test-cases-tab"]');
-    if (await testCasesTab.isVisible()) {
-      await testCasesTab.click();
-      await expect(page.locator('[data-testid="test-cases-section"]')).toBeVisible();
-    }
+  test('sezione revisioni parser visibile', async ({ page }) => {
+    // La tabella revisioni e sempre presente nella pagina
+    await expect(page.locator('h6:has-text("Revisioni parser")')).toBeVisible({ timeout: 10000 });
   });
 
-  test('tab storia revisioni visibile', async ({ page }) => {
-    await page.locator('[data-testid="parser-item"], tbody tr').first().click();
-    const historyTab = page.locator('[data-testid="revisions-tab"]');
-    if (await historyTab.isVisible()) {
-      await historyTab.click();
-      await expect(page.locator('[data-testid="revisions-list"]')).toBeVisible({ timeout: 8000 });
-    }
+  test('pulsanti salva e ricarica presenti', async ({ page }) => {
+    await expect(page.locator('button:has-text("Salva parser")')).toBeVisible();
+    await expect(page.locator('button:has-text("Ricarica")')).toBeVisible();
   });
 
 });

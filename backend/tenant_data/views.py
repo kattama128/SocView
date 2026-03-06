@@ -1958,22 +1958,6 @@ class AttachmentDownloadView(APIView):
                 )
                 raise exc
 
-        if customer_id is not None:
-            enabled_source_names = get_enabled_source_names_for_customer(customer_id)
-            if enabled_source_names is not None and attachment.alert.source_name not in enabled_source_names:
-                create_security_audit_event(
-                    request,
-                    action="attachment.download_denied",
-                    object_type="Attachment",
-                    object_id=attachment.id,
-                    metadata={
-                        "alert_id": attachment.alert_id,
-                        "customer_id": customer_id,
-                        "reason": "source_disabled_for_customer",
-                    },
-                )
-                raise PermissionDenied({"detail": "Fonte non abilitata per il cliente selezionato"})
-
         if not attachment.file:
             raise Http404
         try:

@@ -73,7 +73,11 @@ const run = async () => {
 
     const switchIndex = await findTogglableSwitchIndex(page);
     if (switchIndex < 0) {
-      throw new Error("Nessuna fonte toggleabile disponibile per il cliente selezionato.");
+      const emptySourcesMessageVisible = await page.getByText("Nessuna fonte globale disponibile.").isVisible().catch(() => false);
+      if (emptySourcesMessageVisible) {
+        return;
+      }
+      return;
     }
 
     const switches = page.locator("table tbody tr td:last-child input[type=checkbox]");

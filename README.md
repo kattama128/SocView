@@ -137,7 +137,7 @@ docker compose up -d --build
 ### Backend
 
 ```bash
-docker compose exec backend python manage.py test
+docker compose exec backend python manage.py test --noinput
 ```
 
 ### Frontend

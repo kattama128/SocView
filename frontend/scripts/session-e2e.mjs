@@ -41,9 +41,9 @@ const run = async () => {
 
   await step("Login iniziale", async () => {
     await page.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
-    await page.getByLabel("Username").fill(username);
-    await page.getByLabel("Password").fill(password);
-    await page.getByRole("button", { name: "Accedi" }).click();
+    await page.locator('[data-testid="username-input"], input[name="username"]').first().fill(username);
+    await page.locator('[data-testid="password-input"], input[name="password"]').first().fill(password);
+    await page.locator('[data-testid="login-button"], button[type="submit"]').first().click();
     await page.getByRole("button", { name: "Configura" }).waitFor();
   });
 

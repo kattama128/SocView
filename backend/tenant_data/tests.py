@@ -1,5 +1,6 @@
 from datetime import timedelta
 import json
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -740,6 +741,78 @@ class SourceApiTests(BaseTenantTestCase):
         self.assertEqual(response.data[0]["id"], created_ids[0])
         self.assertEqual(response.data[0]["error_message"], "Errore #0")
         self.assertEqual(response.data[0]["error_detail"]["line"], 0)
+
+    @patch("tenant_data.ingestion_views.ingest_source_task")
+    @patch("tenant_data.ingestion_views.test_source_connection")
+    def test_customer_scoped_source_detail_actions_work_without_scope_all(
+        self,
+        mocked_test_connection,
+        mocked_ingest_task,
+    ):
+        customer = Customer.objects.create(name="Scoped Source Customer", code="SSC")
+        CustomerMembership.objects.create(
+            user=self.manager,
+            customer=customer,
+            scope=CustomerMembership.Scope.MANAGER,
+            is_active=True,
+        )
+        create_response = self.client.post(
+            "/api/ingestion/sources/",
+            data={
+                "customer": customer.id,
+                "name": "Scoped REST Source",
+                "description": "Source cliente dedicata",
+                "type": "rest",
+                "is_enabled": True,
+                "severity_map": {"field": "severity", "default": "medium", "map": {}},
+                "config": {
+                    "config_json": {"url": "https://collector.example/api/customer-events", "method": "GET"},
+                    "poll_interval_seconds": 300,
+                    "rate_limit_per_minute": 60,
+                },
+                "dedup_policy": {
+                    "fingerprint_fields": ["event_id"],
+                    "strategy": "increment_occurrence",
+                },
+            },
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(create_response.status_code, 201, create_response.data)
+        source_id = create_response.data["id"]
+
+        mocked_test_connection.return_value = {"ok": True, "detail": "connected"}
+        mocked_ingest_task.delay.return_value = Mock(id="task-source-run")
+
+        stats_response = self.client.get(
+            f"/api/ingestion/sources/{source_id}/stats/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(stats_response.status_code, 200, stats_response.data)
+
+        error_log_response = self.client.get(
+            f"/api/ingestion/sources/{source_id}/error-log/",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(error_log_response.status_code, 200, error_log_response.data)
+
+        test_connection_response = self.client.post(
+            f"/api/ingestion/sources/{source_id}/test-connection/",
+            data={},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(test_connection_response.status_code, 200, test_connection_response.data)
+        self.assertTrue(test_connection_response.data["ok"])
+
+        run_now_response = self.client.post(
+            f"/api/ingestion/sources/{source_id}/run-now/",
+            data={},
+            format="json",
+            HTTP_HOST="test.localhost",
+        )
+        self.assertEqual(run_now_response.status_code, 202, run_now_response.data)
+        self.assertEqual(run_now_response.data["task_id"], "task-source-run")
 
 
 class CustomerSettingsApiTests(BaseTenantTestCase):
@@ -2326,6 +2399,24 @@ class AttachmentSecurityTests(BaseTenantTestCase):
                 object_id=str(self.attachment.id),
             ).exists()
         )
+
+    def test_authorized_download_allows_historical_alert_source_not_in_enabled_source_registry(self):
+        Source.objects.create(
+            customer=self.customer_a,
+            name="Different Enabled Source",
+            type=Source.Type.REST,
+            is_enabled=True,
+            severity_map={"field": "severity", "default": "medium", "map": {}},
+        )
+
+        response = self.authorized_client.get(
+            f"/api/alerts/attachments/{self.attachment.id}/download/",
+            HTTP_HOST="test.localhost",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = b"".join(response.streaming_content)
+        self.assertEqual(body, b"ioc,1.2.3.4\n")
 
     @override_settings(
         ENABLE_DEV_ATTACHMENT_SCANNER=True,

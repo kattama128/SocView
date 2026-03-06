@@ -115,13 +115,8 @@ export default function ParserPage() {
   };
 
   const loadSources = async () => {
-    const sourceList = await fetchSources();
+    const sourceList = await fetchSources({ scope: "all" });
     setSources(sourceList);
-    if (!sourceList.length) {
-      setSelectedSourceId("");
-      return sourceList;
-    }
-    setSelectedSourceId((current) => (current === "" ? sourceList[0].id : current));
     return sourceList;
   };
 
@@ -135,13 +130,23 @@ export default function ParserPage() {
     setLoading(true);
     setError(null);
     try {
-      const sourceList = await loadSources();
-      const chosenId = selectedSourceId === "" && sourceList.length ? sourceList[0].id : selectedSourceId;
-      if (typeof chosenId === "number") {
-        const chosenSource = sourceList.find((source) => source.id === chosenId);
-        if (chosenSource) {
-          await loadParserForSource(chosenId, chosenSource.name);
-        }
+      const [sourceList, parserList] = await Promise.all([loadSources(), fetchParsers()]);
+      if (!sourceList.length) {
+        setSelectedSourceId("");
+        hydrateFromParser(null, "");
+        return;
+      }
+
+      const chosenId = sourceList.some((source) => source.id === selectedSourceId)
+        ? selectedSourceId
+        : (parserList[0]?.source ?? sourceList[0].id);
+      const chosenSource = sourceList.find((source) => source.id === chosenId) ?? sourceList[0];
+      setSelectedSourceId(chosenSource.id);
+
+      const parser = parserList.find((item) => item.source === chosenSource.id) ?? null;
+      hydrateFromParser(parser, chosenSource.name);
+      if (!parser) {
+        await loadParserForSource(chosenSource.id, chosenSource.name);
       }
     } catch {
       setError("Errore nel caricamento sorgenti/parser.");

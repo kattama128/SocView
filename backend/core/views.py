@@ -288,6 +288,8 @@ class TenantsAdminView(APIView):
                     alert_count = Alert.objects.count()
             except Exception:
                 alert_count = 0
+            paid_until = getattr(tenant, "paid_until", None)
+            is_active = paid_until is None or paid_until >= timezone.now().date()
             tenants_payload.append(
                 {
                     "id": tenant.id,
@@ -295,7 +297,7 @@ class TenantsAdminView(APIView):
                     "name": tenant.name,
                     "domain": domains_map.get(tenant.id, ""),
                     "on_trial": tenant.on_trial,
-                    "status": "active" if tenant.paid_until >= timezone.now().date() else "expired",
+                    "status": "active" if is_active else "expired",
                     "alert_count": alert_count,
                 }
             )
