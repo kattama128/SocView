@@ -418,6 +418,7 @@ export default function AppLayout() {
             size="small"
             onClick={() => void handleLogout()}
             aria-label="logout"
+            data-testid="logout-button"
             sx={{ color: "text.secondary" }}
           >
             <LogoutIcon sx={{ fontSize: "1.1rem" }} />

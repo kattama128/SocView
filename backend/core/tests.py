@@ -65,13 +65,12 @@ class CoreAdminEndpointsTests(TestCase):
     @patch("core.views.get_tenant_domain_model")
     @patch("core.views.get_tenant_model")
     def test_tenants_list_treats_null_paid_until_as_active(self, mocked_tenant_model, mocked_domain_model, mocked_schema_context):
-        tenant = Mock(
-            id=99,
-            schema_name="tenant_null",
-            name="Tenant Null",
-            on_trial=False,
-            paid_until=None,
-        )
+        tenant = Mock()
+        tenant.id = 99
+        tenant.schema_name = "tenant_null"
+        tenant.name = "Tenant Null"
+        tenant.on_trial = False
+        tenant.paid_until = None
         mocked_tenant_model.return_value.objects.all.return_value.order_by.return_value = [tenant]
         mocked_domain_model.return_value.objects.filter.return_value.only.return_value = []
         mocked_schema_context.return_value.__enter__.return_value = None

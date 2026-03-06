@@ -7,6 +7,24 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
 
+from tenant_data.ingestion.connectors.imap_connector import fetch_imap_events, test_imap_connection
+from tenant_data.ingestion.connectors.rest_connector import fetch_rest_events, test_rest_connection
+from tenant_data.ingestion.parser import parse_event
+from tenant_data.ingestion.utils import compute_fingerprint, map_severity, parse_event_timestamp
+from tenant_data.models import (
+    Alert,
+    AlertOccurrence,
+    AlertState,
+    AlertTag,
+    DedupPolicy,
+    IngestionEventLog,
+    IngestionRun,
+    SourceConfig,
+    SourceAlertTypeRule,
+    Source,
+    Tag,
+)
+
 logger = logging.getLogger(__name__)
 
 _REGEX_MAX_LENGTH = 500
@@ -36,24 +54,6 @@ def _safe_regex_search(pattern: str, text: str, flags: int = 0, timeout: int = _
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
-
-from tenant_data.ingestion.connectors.imap_connector import fetch_imap_events, test_imap_connection
-from tenant_data.ingestion.connectors.rest_connector import fetch_rest_events, test_rest_connection
-from tenant_data.ingestion.parser import parse_event
-from tenant_data.ingestion.utils import compute_fingerprint, map_severity, parse_event_timestamp
-from tenant_data.models import (
-    Alert,
-    AlertOccurrence,
-    AlertState,
-    AlertTag,
-    DedupPolicy,
-    IngestionEventLog,
-    IngestionRun,
-    SourceConfig,
-    SourceAlertTypeRule,
-    Source,
-    Tag,
-)
 
 
 @dataclass

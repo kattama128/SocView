@@ -1,6 +1,6 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-from accounts.rbac import CAP_TRIAGE, CAP_VIEW, has_capability
+from accounts.rbac import CAP_VIEW, has_capability
 
 
 class TenantSchemaAccessPermission(BasePermission):

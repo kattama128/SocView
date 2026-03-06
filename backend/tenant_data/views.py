@@ -48,7 +48,6 @@ from tenant_data.models import (
     CustomerSettings,
     CustomerSourcePreference,
     NotificationEvent,
-    NotificationPreferences,
     NotificationRead,
     PushSubscription,
     SLAConfig,

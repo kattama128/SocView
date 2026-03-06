@@ -2606,7 +2606,7 @@ class AnalyticsApiTests(BaseTenantTestCase):
         )
 
         now = timezone.now()
-        alert_open = Alert.objects.create(
+        _alert_open = Alert.objects.create(
             title="Open analytics alert",
             severity=Alert.Severity.HIGH,
             event_timestamp=now,

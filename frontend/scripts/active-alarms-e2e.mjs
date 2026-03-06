@@ -16,25 +16,19 @@ const run = async () => {
   const { issues, step } = createIssueTracker();
   const { browser, context, page } = await openBrowserPage();
 
-  let searchEndpointHit = false;
-  page.on("response", (response) => {
-    if (response.url().includes("/api/alerts/search/") && response.status() < 400) {
-      searchEndpointHit = true;
-    }
-  });
-
   await step("Login admin", async () => {
     await login(page, "admin");
     await page.getByRole("button", { name: "Configura" }).waitFor();
   });
 
   await step("Apertura Active Alarms e caricamento dati", async () => {
+    const searchResponsePromise = page.waitForResponse(
+      (resp) => resp.url().includes("/api/alerts/search/") && resp.status() < 400,
+      { timeout: 10000 },
+    );
     await page.goto(`${baseUrl}/active-alarms`, { waitUntil: "domcontentloaded" });
     await page.getByText("Active Alarms").first().waitFor();
-    await page.waitForTimeout(1200);
-    if (!searchEndpointHit) {
-      throw new Error("Endpoint /api/alerts/search/ non chiamato o in errore.");
-    }
+    await searchResponsePromise;
   });
 
   await step("Filtri severity da popover", async () => {

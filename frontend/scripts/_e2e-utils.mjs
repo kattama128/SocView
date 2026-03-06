@@ -5,16 +5,16 @@ export const hostHeader = process.env.QA_HOST_HEADER || "";
 
 export const credentials = {
   admin: {
-    username: process.env.QA_USERNAME_ADMIN || process.env.QA_USERNAME || "",
-    password: process.env.QA_PASSWORD_ADMIN || process.env.QA_PASSWORD || "",
+    username: process.env.QA_USERNAME_ADMIN || process.env.QA_USERNAME || "admin",
+    password: process.env.QA_PASSWORD_ADMIN || process.env.QA_PASSWORD || "admin",
   },
   manager: {
-    username: process.env.QA_USERNAME_MANAGER || "",
-    password: process.env.QA_PASSWORD_MANAGER || "",
+    username: process.env.QA_USERNAME_MANAGER || "analyst1",
+    password: process.env.QA_PASSWORD_MANAGER || "analyst1",
   },
   analyst: {
-    username: process.env.QA_USERNAME_ANALYST || "",
-    password: process.env.QA_PASSWORD_ANALYST || "",
+    username: process.env.QA_USERNAME_ANALYST || "analyst1",
+    password: process.env.QA_PASSWORD_ANALYST || "analyst1",
   },
 };
 
