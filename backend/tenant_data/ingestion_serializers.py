@@ -2,6 +2,7 @@ import re
 
 from rest_framework import serializers
 from django.core.exceptions import ObjectDoesNotExist
+from drf_spectacular.utils import extend_schema_field
 
 from tenant_data.source_capabilities import is_source_type_create_enabled, source_type_capability
 from tenant_data.models import (
@@ -342,6 +343,7 @@ class SourceSerializer(serializers.ModelSerializer):
         instance._state.fields_cache.pop("alert_type_rules", None)
         return instance
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_webhook_endpoint(self, obj):
         request = self.context.get("request")
         if obj.type != Source.Type.WEBHOOK:
@@ -354,6 +356,7 @@ class SourceSerializer(serializers.ModelSerializer):
         base = f"http://localhost"
         return f"{base}{path}"
 
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_parser_definition_id(self, obj):
         try:
             parser_definition = obj.parser_definition
@@ -361,6 +364,7 @@ class SourceSerializer(serializers.ModelSerializer):
             parser_definition = None
         return getattr(parser_definition, "id", None)
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_parser_definition_name(self, obj):
         try:
             parser_definition = obj.parser_definition
@@ -368,6 +372,7 @@ class SourceSerializer(serializers.ModelSerializer):
             parser_definition = None
         return getattr(parser_definition, "name", None)
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_customer_name(self, obj):
         return getattr(obj.customer, "name", None)
 
@@ -415,6 +420,7 @@ class IngestionRunSerializer(serializers.ModelSerializer):
             "events",
         )
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_customer_name(self, obj):
         return getattr(obj.customer, "name", None)
 

@@ -269,7 +269,23 @@ def _require_super_admin(request):
 class TenantsAdminView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    @extend_schema(tags=["Core"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="TenantAdminListEntry",
+            many=True,
+            fields={
+                "id": serializers.IntegerField(),
+                "schema_name": serializers.CharField(),
+                "name": serializers.CharField(),
+                "domain": serializers.CharField(),
+                "on_trial": serializers.BooleanField(),
+                "status": serializers.CharField(),
+                "alert_count": serializers.IntegerField(),
+            },
+        ),
+        tags=["Core"],
+    )
     def get(self, request):
         _require_super_admin(request)
         TenantModel = get_tenant_model()
@@ -348,7 +364,17 @@ class TenantsAdminView(APIView):
 class CheckTenantDomainView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    @extend_schema(tags=["Core"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="CheckTenantDomainResponse",
+            fields={
+                "available": serializers.BooleanField(),
+                "detail": serializers.CharField(required=False),
+            },
+        ),
+        tags=["Core"],
+    )
     def get(self, request):
         _require_super_admin(request)
         domain = str(request.query_params.get("domain", "")).strip().lower()
@@ -362,7 +388,19 @@ class CheckTenantDomainView(APIView):
 class TaskStatusView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    @extend_schema(tags=["Core"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="TaskStatusResponse",
+            fields={
+                "task_id": serializers.CharField(),
+                "status": serializers.CharField(),
+                "result": serializers.JSONField(required=False),
+                "error": serializers.CharField(required=False),
+            },
+        ),
+        tags=["Core"],
+    )
     def get(self, request, task_id):
         _require_super_admin(request)
         task = AsyncResult(task_id)
@@ -377,7 +415,17 @@ class TaskStatusView(APIView):
 class OnboardingPreferenceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    @extend_schema(tags=["Core"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="OnboardingPreferenceResponse",
+            fields={
+                "key": serializers.CharField(),
+                "value": serializers.JSONField(),
+            },
+        ),
+        tags=["Core"],
+    )
     def get(self, request, tenant_key):
         key = f"onboarding_{tenant_key}"
         preference = UserPreference.objects.filter(user=request.user, key=key).first()
@@ -387,6 +435,13 @@ class OnboardingPreferenceView(APIView):
         request=inline_serializer(
             name="OnboardingPreferenceRequest",
             fields={"value": serializers.JSONField()},
+        ),
+        responses=inline_serializer(
+            name="OnboardingPreferencePatchResponse",
+            fields={
+                "key": serializers.CharField(),
+                "value": serializers.JSONField(),
+            },
         ),
         tags=["Core"],
     )

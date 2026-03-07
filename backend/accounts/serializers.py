@@ -3,6 +3,7 @@ from __future__ import annotations
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from drf_spectacular.utils import extend_schema_field
 
 from accounts.rbac import CAP_ADMIN, ROLE_CAPABILITIES, permissions_map_for_user
 from tenant_data.models import Customer, CustomerMembership
@@ -43,9 +44,11 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ("id", "username", "email", "first_name", "last_name", "role", "permissions", "is_public_schema")
 
+    @extend_schema_field(serializers.DictField(child=serializers.BooleanField()))
     def get_permissions(self, obj):
         return permissions_map_for_user(obj)
 
+    @extend_schema_field(serializers.BooleanField())
     def get_is_public_schema(self, obj):
         request = self.context.get("request")
         tenant = getattr(request, "tenant", None) if request else None
@@ -76,13 +79,16 @@ class UserDetailSerializer(serializers.ModelSerializer):
             "is_public_schema",
         )
 
+    @extend_schema_field(serializers.DictField(child=serializers.BooleanField()))
     def get_permissions(self, obj):
         return permissions_map_for_user(obj)
 
+    @extend_schema_field(UserMembershipSerializer(many=True))
     def get_memberships(self, obj):
         queryset = obj.customer_memberships.select_related("customer").order_by("customer__name", "customer_id")
         return UserMembershipSerializer(queryset, many=True).data
 
+    @extend_schema_field(serializers.BooleanField())
     def get_is_public_schema(self, obj):
         request = self.context.get("request")
         tenant = getattr(request, "tenant", None) if request else None

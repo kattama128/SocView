@@ -163,6 +163,12 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    "ENUM_NAME_OVERRIDES": {
+        "SeverityEnum": "tenant_data.models.Alert.Severity",
+        "MinSeverityEnum": "tenant_data.models.NotificationPreferences.MinSeverity",
+        "MembershipScopeEnum": "tenant_data.models.CustomerMembership.Scope",
+        "TagScopeEnum": "tenant_data.models.Tag.Scope",
+    },
 }
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")

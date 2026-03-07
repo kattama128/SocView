@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 
 from tenant_data.ingestion.parser import ParserValidationError, parse_parser_config_text
 from tenant_data.models import ParserDefinition, ParserRevision, ParserTestCase
@@ -27,9 +28,11 @@ class ParserRevisionSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_created_by_username(self, obj):
         return getattr(obj.created_by, "username", None)
 
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_rollback_from_version(self, obj):
         return getattr(obj.rollback_from, "version", None)
 
@@ -122,12 +125,15 @@ class ParserDefinitionSerializer(serializers.ModelSerializer):
                 self._create_revision(instance, config_text=config_text, config_data=config_data)
         return instance
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_source_name(self, obj):
         return getattr(obj.source, "name", None)
 
+    @extend_schema_field(serializers.CharField())
     def get_active_config_text(self, obj):
         return obj.active_revision.config_text if obj.active_revision else ""
 
+    @extend_schema_field(serializers.JSONField())
     def get_active_config_data(self, obj):
         return obj.active_revision.config_data if obj.active_revision else {}
 
@@ -142,6 +148,7 @@ class ParserRevisionListItemSerializer(serializers.ModelSerializer):
         fields = ("revision_id", "version", "created_at", "created_by", "config_snapshot")
         read_only_fields = fields
 
+    @extend_schema_field(serializers.JSONField(allow_null=True))
     def get_created_by(self, obj):
         if not obj.created_by:
             return None

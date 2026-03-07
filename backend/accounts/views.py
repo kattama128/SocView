@@ -124,7 +124,20 @@ class TokenCookieMigrationView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [AuthRateThrottle]
 
-    @extend_schema(tags=["Auth"])
+    @extend_schema(
+        request=inline_serializer(
+            name="TokenCookieMigrationRequest",
+            fields={
+                "access": serializers.CharField(),
+                "refresh": serializers.CharField(required=False),
+            },
+        ),
+        responses=inline_serializer(
+            name="TokenCookieMigrationResponse",
+            fields={"user": UserSerializer()},
+        ),
+        tags=["Auth"],
+    )
     def post(self, request):
         access = request.data.get("access")
         refresh = request.data.get("refresh")
@@ -152,7 +165,14 @@ class TokenCookieMigrationView(APIView):
 class CSRFTokenView(APIView):
     permission_classes = [permissions.AllowAny]
 
-    @extend_schema(tags=["Auth"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="CSRFTokenResponse",
+            fields={"csrfToken": serializers.CharField()},
+        ),
+        tags=["Auth"],
+    )
     def get(self, request):
         token = get_token(request)
         return Response({"csrfToken": token}, status=status.HTTP_200_OK)
@@ -161,7 +181,11 @@ class CSRFTokenView(APIView):
 class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
-    @extend_schema(tags=["Auth"])
+    @extend_schema(
+        request=None,
+        responses={204: None},
+        tags=["Auth"],
+    )
     def post(self, request):
         refresh_cookie_name = getattr(settings, "AUTH_REFRESH_COOKIE_NAME", "refresh_token")
         refresh_cookie = request.COOKIES.get(refresh_cookie_name)
@@ -187,7 +211,14 @@ class CurrentUserView(APIView):
 class WebSocketTokenView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    @extend_schema(tags=["Auth"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="WebSocketTokenResponse",
+            fields={"access": serializers.CharField()},
+        ),
+        tags=["Auth"],
+    )
     def get(self, request):
         token = str(RefreshToken.for_user(request.user).access_token)
         return Response({"access": token}, status=status.HTTP_200_OK)
@@ -410,7 +441,24 @@ class UsersManagementViewSet(viewsets.ModelViewSet):
 class RolesView(APIView):
     permission_classes = [TenantSchemaAccessPermission, permissions.IsAuthenticated]
 
-    @extend_schema(tags=["Auth"])
+    @extend_schema(
+        request=None,
+        responses=inline_serializer(
+            name="RolesMatrixResponse",
+            fields={
+                "roles": serializers.ListField(
+                    child=inline_serializer(
+                        name="RoleMatrixEntry",
+                        fields={
+                            "role": serializers.CharField(),
+                            "capabilities": serializers.ListField(child=serializers.CharField()),
+                        },
+                    ),
+                ),
+            },
+        ),
+        tags=["Auth"],
+    )
     def get(self, request):
         if not has_capability(request.user, CAP_VIEW):
             return Response({"detail": "Permessi insufficienti"}, status=status.HTTP_403_FORBIDDEN)

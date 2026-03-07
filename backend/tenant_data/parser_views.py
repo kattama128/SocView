@@ -1,6 +1,6 @@
 import json
 
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -269,6 +269,14 @@ class ParserDefinitionViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="revision_id",
+                type=int,
+                location=OpenApiParameter.PATH,
+                description="ID of the parser revision",
+            ),
+        ],
         responses=inline_serializer(
             name="ParserRevisionDiffResponse",
             fields={

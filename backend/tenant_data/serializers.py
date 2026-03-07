@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 
 from tenant_data.models import (
     Alert,
@@ -288,6 +289,7 @@ class AlertBaseSerializer(serializers.ModelSerializer):
         alert_tags = obj.alert_tags.select_related("tag")
         return TagSerializer([item.tag for item in alert_tags], many=True).data
 
+    @extend_schema_field(serializers.JSONField(allow_null=True))
     def get_sla_status(self, obj):
         cache_key = "_sla_config_map"
         config_map = self.context.get(cache_key)
@@ -460,9 +462,9 @@ class AlertSearchRequestSerializer(serializers.Serializer):
         required=False,
         allow_empty=False,
     )
-    severity = serializers.ChoiceField(choices=Alert.Severity.values, required=False)
+    severity = serializers.ChoiceField(choices=Alert.Severity.choices, required=False)
     severities = serializers.ListField(
-        child=serializers.ChoiceField(choices=Alert.Severity.values),
+        child=serializers.ChoiceField(choices=Alert.Severity.choices),
         required=False,
         allow_empty=False,
     )

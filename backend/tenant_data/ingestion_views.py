@@ -461,6 +461,24 @@ class WebhookIngestionView(APIView):
         cache.set(key, current + 1, timeout=120)
         return True
 
+    @extend_schema(
+        request=inline_serializer(
+            name="WebhookIngestionRequest",
+            fields={"payload": serializers.JSONField()},
+        ),
+        responses=inline_serializer(
+            name="WebhookIngestionResponse",
+            fields={
+                "run_id": serializers.IntegerField(),
+                "status": serializers.CharField(),
+                "processed": serializers.IntegerField(),
+                "created": serializers.IntegerField(),
+                "updated": serializers.IntegerField(),
+                "errors": serializers.IntegerField(),
+            },
+        ),
+        tags=["Ingestion Webhook"],
+    )
     def post(self, request, source_id):
         source = Source.objects.select_related(
             "config",
